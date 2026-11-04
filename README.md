@@ -10,6 +10,12 @@ Blueprint untuk sistem manajemen kos multi-properti menggunakan Next.js, TypeScr
 - [Implementation prompt](docs/IMPLEMENTATION-PROMPT.md) — prompt kerja untuk coding agent.
 - [Aturan agent](AGENTS.md) — standar bahasa, keamanan, kode, dan pelaporan.
 
+## Pratinjau konsep
+
+![Pratinjau dashboard KosManager — mockup dengan data contoh](docs/assets/kosmanager-dashboard-preview.svg)
+
+Gambar ini adalah mockup visual untuk arah UI; aplikasi dan data di dalamnya belum berjalan.
+
 ## Status
 
 Dokumen dan struktur awal proyek telah disiapkan. Aplikasi belum dibootstrap dan belum ada fitur yang diklaim berjalan. Ikuti `docs/IMPLEMENTATION-PROMPT.md` untuk memulai implementasi per vertical slice.
