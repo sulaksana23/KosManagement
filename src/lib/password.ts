@@ -7,6 +7,13 @@ export type PasswordRule = {
   valid: boolean;
 };
 
+export type PasswordStrengthTone =
+  | "neutral"
+  | "danger"
+  | "warning"
+  | "good"
+  | "strong";
+
 export function getPasswordStrength(password: string) {
   const hasMixedCase = /[a-z]/.test(password) && /[A-Z]/.test(password);
   const hasNumber = /[0-9]/.test(password);
@@ -38,7 +45,7 @@ export function getPasswordStrength(password: string) {
             ? "Kuat"
             : "Sangat kuat";
 
-  const tone = !password
+  const tone: PasswordStrengthTone = !password
     ? "neutral"
     : !meetsMinimum || score <= 1
       ? "danger"
