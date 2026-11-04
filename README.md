@@ -14,10 +14,8 @@ Blueprint untuk sistem manajemen kos multi-properti menggunakan Next.js, TypeScr
 
 Dokumen dan struktur awal proyek telah disiapkan. Aplikasi belum dibootstrap dan belum ada fitur yang diklaim berjalan. Ikuti `docs/IMPLEMENTATION-PROMPT.md` untuk memulai implementasi per vertical slice.
 
-## Memulai di GitHub
+## Memulai
 
-1. Buat repository `kos-manager-nextjs`.
-2. Unggah `README.md`, `AGENTS.md`, dan folder `docs/`.
-3. Buka repo dengan coding agent dan gunakan prompt di `docs/IMPLEMENTATION-PROMPT.md`.
+Repository `sulaksana23/KosManagement` sudah berisi blueprint ini pada branch `main`. Tinjau PRD dan arsitektur, lalu gunakan `docs/IMPLEMENTATION-PROMPT.md` dengan coding agent untuk memulai implementasi per vertical slice.
 
 Jangan masukkan secret, data penghuni nyata, atau dokumen pribadi ke repository.
