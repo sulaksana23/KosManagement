@@ -2,6 +2,7 @@ import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { db } from "@/db";
 import { authSchema } from "@/db/schema";
+import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from "@/lib/password";
 
 const fallbackSecret = "kosmanager-local-development-secret-change-before-deploy";
 const secret = process.env.BETTER_AUTH_SECRET;
@@ -20,8 +21,8 @@ export const auth = betterAuth({
   }),
   emailAndPassword: {
     enabled: true,
-    minPasswordLength: 10,
-    maxPasswordLength: 128,
+    minPasswordLength: MIN_PASSWORD_LENGTH,
+    maxPasswordLength: MAX_PASSWORD_LENGTH,
   },
   trustedOrigins: [process.env.BETTER_AUTH_URL ?? "http://localhost:3000"],
 });
