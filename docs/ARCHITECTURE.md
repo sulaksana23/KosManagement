@@ -11,7 +11,7 @@ Dokumen keputusan implementasi. PRD menetapkan batasan produk dan stack; keputus
 - Semua perubahan finansial dan kontrak penting menggunakan transaksi serta audit trail.
 - File identitas dan bukti pembayaran disimpan privat; akses melalui URL signed yang berumur pendek.
 
-## Stack yang ditetapkan
+## Stack yang diterapkan
 
 | Area | Pilihan |
 |---|---|
@@ -22,31 +22,33 @@ Dokumen keputusan implementasi. PRD menetapkan batasan produk dan stack; keputus
 | Validasi | Zod |
 | Ikon | Lucide |
 
-## Keputusan yang harus dibuat saat implementasi
+Versi dasar yang dipasang saat bootstrap: Next.js `16.4.5`, React `19.3.1`, Better Auth `1.7.17`, `@better-auth/drizzle-adapter` `1.7.17`, Drizzle ORM `0.45.4`, Drizzle Kit `0.31.11`, dan Tailwind CSS `4.1`. Pembaruan versi harus ditinjau dan lockfile diperbarui bersama.
+
+## Status keputusan implementasi
 
 ### Autentikasi
 
-Belum dipilih. Sebelum menambahkan dependency, bandingkan opsi yang mendukung versi stabil Next.js dan PostgreSQL, dokumentasi pemeliharaan, sesi aman, pemulihan kata sandi, undangan, serta integrasi role/workspace. Catat versi, alasan, dan batasan pilihan setelah verifikasi dokumentasi resmi.
+Better Auth `1.7.17` dengan adapter Drizzle `1.7.17`; menggunakan email dan kata sandi serta tabel sesi di PostgreSQL. Route handler memakai integrasi Next.js. Pemeriksaan sesi, workspace, dan peran dilakukan kembali di halaman, server action, serta ekspor CSV. Pemilik membuat token undangan acak sekali pakai yang disimpan sebagai hash dan kedaluwarsa dalam 7 hari; tautan dibagikan secara pribadi karena email belum dikonfigurasi. Penerimaan memeriksa alamat email akun dan memastikan akun belum terikat ke workspace lain. Reset kata sandi melalui email menunggu konfigurasi provider email. Satu akun dibatasi pada satu workspace sampai pemilih workspace tersedia.
 
 ### Penyimpanan file
 
-Belum dipilih. Pilih object storage privat yang mendukung signed URL, pembatasan ukuran/jenis file, dan kontrol akses. Jangan menggunakan URL publik permanen untuk dokumen pribadi.
+Belum dipilih. Upload dokumen/foto tidak aktif. Pilih object storage privat yang mendukung signed URL, pembatasan ukuran/jenis file, dan kontrol akses sebelum mengaktifkannya. Jangan menggunakan URL publik permanen untuk dokumen pribadi.
 
 ### Pembayaran dan notifikasi
 
-Adapter disiapkan setelah provider dan kredensial tersedia. Webhook harus memverifikasi signature dan idempotency. Redirect browser tidak menjadi bukti pembayaran berhasil.
+Belum diaktifkan. Pembayaran manual anggota berizin mencatat verifikasi, mengunci invoice, dan memperbarui saldo dalam transaksi. Adapter gateway baru boleh dibuat setelah provider/kredensial tersedia; webhook perlu verifikasi signature dan idempotency. Redirect browser tidak menjadi bukti pembayaran berhasil.
 
-## Batas lapisan aplikasi
+## Struktur implementasi saat ini
 
-- `src/app`: route, layout, loading/error states, dan komposisi halaman.
-- `src/features`: UI dan schema fitur yang terorganisasi.
-- `src/server/auth`: pembacaan sesi tervalidasi.
-- `src/server/permissions`: pemeriksaan role dan akses object.
-- `src/server/repositories`: query database yang dibatasi workspace.
-- `src/server/services`: aturan domain dan transaksi.
-- `src/lib/validation`: schema input Zod.
-- `src/lib/formatting`: format rupiah `id-ID` dan tanggal sesuai zona properti.
-- `drizzle`: schema serta migration yang ditinjau dan disimpan di repository.
+- `src/app`: route, layout, state loading/error, dan komposisi halaman server.
+- `src/components`: shell navigasi dan komponen UI bersama.
+- `src/server/context.ts`: sesi tervalidasi dan konteks workspace/peran.
+- `src/server/actions.ts`: validasi Zod, authorization, transaksi domain, dan audit untuk mutasi.
+- `src/db`: koneksi PostgreSQL dan schema Drizzle.
+- `src/lib`: format rupiah, tanggal, ID, dan rentang periode.
+- `drizzle`: migration SQL dan snapshot schema yang dihasilkan Drizzle Kit.
+
+Untuk MVP, sebagian query halaman dan mutasi masih dekat dengan route/server action. Saat fitur bertambah, pindahkan query berulang ke repository dan aturan domain ke service terpisah sebelum memperluas modul.
 
 ## Risiko yang harus ditangani
 
