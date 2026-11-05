@@ -57,3 +57,8 @@ Untuk MVP, sebagian query halaman dan mutasi masih dekat dengan route/server act
 - Ketidakcocokan timezone saat periode tagihan dan tanggal kontrak dihitung.
 - Bukti bayar dan dokumen identitas terbuka melalui URL publik atau pemeriksaan kepemilikan yang lemah.
 - Ringkasan dashboard tidak cocok dengan data transaksi jika query/definisi metrik tidak konsisten.
+
+
+## Paket Free dan Pro
+
+Paket tersimpan sebagai enum pada workspace. Batas Free untuk properti, kamar, dan anggota diperiksa dalam transaksi dengan mengunci baris workspace agar pembuatan bersamaan tidak melewati kuota. Undangan aktif memakai slot anggota. Permintaan Pro disetujui admin platform melalui daftar email pada `KOSMANAGER_ADMIN_EMAILS`; belum ada payment gateway, harga, atau checkout otomatis.

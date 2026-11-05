@@ -242,3 +242,9 @@ Entitas pendukung yang perlu dipertimbangkan: `Invitation`, `InvoiceItem`, `Paym
 - Alur utama dapat digunakan di ponsel dan desktop tanpa overflow yang merusak.
 - Error, loading, data kosong, dan validasi form ditangani dengan pesan Bahasa Indonesia yang jelas.
 - Migration, `.env.example`, seed data development, dan petunjuk setup tersedia.
+
+## 11. Paket Free dan Pro
+
+Paket berlaku per workspace. Paket Free mencakup 1 properti, 10 kamar, dan 3 anggota (termasuk pemilik); undangan aktif ikut memakai kuota anggota. Fitur operasional MVP tetap tersedia selama kuota terpenuhi. Paket Pro membuka kuota properti, kamar, dan anggota tanpa batas. Kuota diperiksa di server pada setiap pembuatan data, bukan hanya pada tampilan.
+
+Permintaan upgrade Pro dikirim pemilik workspace dan disetujui admin platform secara manual. Harga maupun pembayaran otomatis belum ditetapkan; jangan menampilkan checkout atau mengaktifkan Pro berdasarkan redirect pembayaran.

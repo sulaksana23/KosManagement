@@ -1,7 +1,9 @@
-import { eq } from "drizzle-orm";
+import { count, eq } from "drizzle-orm";
+import Link from "next/link";
 import { BedDouble, Plus } from "lucide-react";
 import { db } from "@/db";
-import { properties, rooms } from "@/db/schema";
+import { organizations, properties, rooms } from "@/db/schema";
+import { PLAN_LIMITS } from "@/lib/plans";
 import { EmptyState, FormCard, PageHeading, PageNotice, SelectField, StatusBadge, TextField } from "@/components/ui";
 import { createRoom, updateRoomStatus } from "@/server/actions";
 import { requireWorkspace } from "@/server/context";
@@ -10,16 +12,25 @@ import { formatIDR } from "@/lib/format";
 export default async function RoomsPage({ searchParams }: { searchParams: Promise<{ notice?: string; error?: string }> }) {
   const ctx = await requireWorkspace(["owner", "manager", "staff"]);
   const params = await searchParams;
-  const [propertyList, roomList] = await Promise.all([
+  const [propertyList, roomList, roomCountRows, organizationRows] = await Promise.all([
     db.select({ id: properties.id, name: properties.name }).from(properties).where(eq(properties.organizationId, ctx.organizationId)).orderBy(properties.name),
     db.select({ room: rooms, propertyName: properties.name }).from(rooms).innerJoin(properties, eq(rooms.propertyId, properties.id)).where(eq(rooms.organizationId, ctx.organizationId)).orderBy(properties.name, rooms.code).limit(100),
+    db.select({ total: count() }).from(rooms).where(eq(rooms.organizationId, ctx.organizationId)),
+    db.select({ plan: organizations.plan }).from(organizations).where(eq(organizations.id, ctx.organizationId)).limit(1),
   ]);
+  const roomCount = Number(roomCountRows[0]?.total ?? 0);
+  const plan = organizationRows[0]?.plan ?? "free";
+  const roomLimit = PLAN_LIMITS[plan].rooms;
+  const reachedLimit = roomLimit !== null && roomCount >= roomLimit;
   const roomOptions = { available: "Tersedia", maintenance: "Perawatan", inactive: "Nonaktif" };
   return <div className="page-stack">
-    <PageHeading title="Kamar" description="Atur tipe, harga, dan status kamar di semua properti." action={<span className="badge badge-gray">{roomList.length} kamar</span>} />
+    <PageHeading title="Kamar" description="Atur tipe, harga, dan status kamar di semua properti." action={<span className="badge badge-gray">{roomCount} kamar</span>} />
     <PageNotice notice={params.notice} error={params.error} />
-    {ctx.role !== "staff" && <FormCard title="Tambah kamar" description="Nomor kamar harus unik di dalam properti yang dipilih.">
-      {propertyList.length === 0 ? <p className="muted m-0 text-sm">Tambahkan properti terlebih dahulu sebelum membuat kamar.</p> : <form action={createRoom} className="form-grid">
+    {ctx.role !== "staff" && <FormCard title="Tambah kamar" description="Kode kamar harus unik di dalam properti yang dipilih.">
+      {reachedLimit ? <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="muted m-0 text-sm">{ctx.role === "owner" ? "Paket Free sudah mencapai batas 10 kamar." : "Paket Free sudah mencapai batas kamar. Hubungi pemilik workspace untuk upgrade."}</p>
+        {ctx.role === "owner" && <Link href="/plan" className="btn btn-secondary">Lihat Paket Pro</Link>}
+      </div> : propertyList.length === 0 ? <p className="muted m-0 text-sm">Tambahkan properti terlebih dahulu sebelum membuat kamar.</p> : <form action={createRoom} className="form-grid">
         <SelectField name="propertyId" label="Properti" options={propertyList.map((property) => ({ value: property.id, label: property.name }))} required />
         <TextField name="code" label="Kode kamar" placeholder="A-01" required />
         <TextField name="type" label="Tipe kamar" defaultValue="Standard" required />

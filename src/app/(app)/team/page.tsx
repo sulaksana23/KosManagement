@@ -1,7 +1,9 @@
 import { and, eq, gt, isNull } from "drizzle-orm";
+import Link from "next/link";
 import { Users } from "lucide-react";
 import { db } from "@/db";
-import { authUsers, invitations, members } from "@/db/schema";
+import { authUsers, invitations, members, organizations } from "@/db/schema";
+import { PLAN_LIMITS } from "@/lib/plans";
 import { ConfirmSubmitButton } from "@/components/confirm-submit-button";
 import { InvitationForm } from "@/components/invitation-form";
 import { EmptyState, FormCard, PageHeading, PageNotice } from "@/components/ui";
@@ -15,16 +17,28 @@ export default async function TeamPage({ searchParams }: { searchParams: Promise
   const team = await db.select({ member: members, name: authUsers.name, email: authUsers.email })
     .from(members).innerJoin(authUsers, eq(members.userId, authUsers.id))
     .where(eq(members.organizationId, ctx.organizationId)).orderBy(members.createdAt);
-  const pendingInvitations = await db.select().from(invitations).where(and(
-    eq(invitations.organizationId, ctx.organizationId), isNull(invitations.acceptedAt), gt(invitations.expiresAt, new Date()),
-  )).orderBy(invitations.createdAt);
+  const [pendingInvitations, organizationRows] = await Promise.all([
+    db.select().from(invitations).where(and(
+      eq(invitations.organizationId, ctx.organizationId), isNull(invitations.acceptedAt), gt(invitations.expiresAt, new Date()),
+    )).orderBy(invitations.createdAt),
+    db.select({ plan: organizations.plan }).from(organizations).where(eq(organizations.id, ctx.organizationId)).limit(1),
+  ]);
+  const plan = organizationRows[0]?.plan ?? "free";
+  const memberLimit = PLAN_LIMITS[plan].members;
+  const usedMemberSlots = team.length + pendingInvitations.length;
+  const hasMemberSlot = memberLimit === null || usedMemberSlots < memberLimit;
 
   return <div className="page-stack">
-    <PageHeading title="Anggota workspace" description="Kelola akses dan bagikan undangan ke anggota baru." action={<span className="badge badge-gray">{team.length} anggota</span>} />
+    <PageHeading title="Anggota workspace" description="Kelola akses dan bagikan undangan ke anggota baru." action={<span className="badge badge-gray">{usedMemberSlots}{memberLimit === null ? "" : ` / ${memberLimit}`} slot</span>} />
     <PageNotice notice={params.notice} error={params.error} />
     <FormCard title="Undang anggota" description="Tautan berlaku 7 hari dan dapat diterima hanya oleh akun dengan email undangan.">
-      <InvitationForm />
-      <p className="muted mb-0 mt-3 text-xs">Kirim tautan secara pribadi. Email belum dikirim otomatis; satu akun hanya dapat bergabung ke satu workspace.</p>
+      {hasMemberSlot ? <>
+        <InvitationForm />
+        <p className="muted mb-0 mt-3 text-xs">Undangan aktif menggunakan slot anggota. Kirim tautan secara pribadi; email belum dikirim otomatis.</p>
+      </> : <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="muted m-0 text-sm">Kuota Paket Free mencakup pemilik dan undangan aktif. Upgrade ke Pro untuk menambah anggota.</p>
+        <Link href="/plan" className="btn btn-secondary">Lihat Paket Pro</Link>
+      </div>}
     </FormCard>
     <section className="surface overflow-hidden">
       <div className="flex items-center gap-2 border-b border-[#e8eeeb] px-4 py-3"><Users size={16} className="text-[#438363]" /><h2 className="surface-title m-0">Daftar anggota</h2></div>

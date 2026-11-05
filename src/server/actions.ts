@@ -1,6 +1,6 @@
 "use server";
 
-import { and, eq, gte, isNull, lte, or } from "drizzle-orm";
+import { and, count, eq, gte, gt, isNull, lte, or } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -22,9 +22,12 @@ import {
   tenants,
   utilityReadings,
   payments,
+  planRequests,
 } from "@/db/schema";
 import { requireUser, requireWorkspace } from "@/server/context";
 import { id, monthRange, todayISO } from "@/lib/format";
+import { PLAN_LIMITS } from "@/lib/plans";
+import { requirePlatformAdmin } from "@/server/platform-admin";
 
 const requiredText = (max: number) => z.string().trim().min(1).max(max);
 const money = z.string().regex(/^\d{1,14}$/, "Masukkan nominal rupiah berupa angka bulat.");
@@ -93,10 +96,36 @@ export async function createInvitation(_previousState: { error?: string; inviteL
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   try {
     await db.transaction(async (tx) => {
+      const [organization] = await tx.select({ plan: organizations.plan }).from(organizations)
+        .where(eq(organizations.id, ctx.organizationId)).for("update").limit(1);
+      if (!organization) throw new Error("WORKSPACE_NOT_FOUND");
+
+      const [existingMember] = await tx.select({ id: members.id }).from(members).innerJoin(authUsers, eq(members.userId, authUsers.id))
+        .where(and(eq(members.organizationId, ctx.organizationId), eq(authUsers.email, parsed.data.email))).limit(1);
+      if (existingMember) throw new Error("INVITATION_MEMBER_EXISTS");
+      const [activeInvitation] = await tx.select({ id: invitations.id }).from(invitations).where(and(
+        eq(invitations.organizationId, ctx.organizationId), eq(invitations.email, parsed.data.email),
+        isNull(invitations.acceptedAt), gt(invitations.expiresAt, new Date()),
+      )).limit(1);
+      if (activeInvitation) throw new Error("INVITATION_ALREADY_PENDING");
+
+      const memberLimit = PLAN_LIMITS[organization.plan].members;
+      if (memberLimit !== null) {
+        const [memberCount] = await tx.select({ total: count() }).from(members)
+          .where(eq(members.organizationId, ctx.organizationId));
+        const [invitationCount] = await tx.select({ total: count() }).from(invitations).where(and(
+          eq(invitations.organizationId, ctx.organizationId), isNull(invitations.acceptedAt), gt(invitations.expiresAt, new Date()),
+        ));
+        if (memberCount.total + invitationCount.total >= memberLimit) throw new Error("FREE_LIMIT_MEMBERS");
+      }
+
       await tx.insert(invitations).values({ id: invitationId, organizationId: ctx.organizationId, email: parsed.data.email, role: parsed.data.role, tokenHash: await tokenHash(token), expiresAt, createdBy: ctx.userId });
       await audit(tx, ctx.organizationId, ctx.userId, "invitation.created", "invitation", invitationId, { email: parsed.data.email, role: parsed.data.role, expiresAt });
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message === "FREE_LIMIT_MEMBERS") return { error: "Kuota Paket Free adalah 3 anggota, termasuk pemilik dan undangan aktif. Ajukan upgrade ke Pro untuk menambah anggota." };
+    if (error instanceof Error && error.message === "INVITATION_MEMBER_EXISTS") return { error: "Email tersebut sudah menjadi anggota workspace." };
+    if (error instanceof Error && error.message === "INVITATION_ALREADY_PENDING") return { error: "Undangan aktif untuk email tersebut sudah tersedia." };
     return { error: "Undangan gagal dibuat. Coba lagi." };
   }
   revalidatePath("/team");
@@ -185,10 +214,24 @@ export async function createProperty(form: FormData) {
   });
   if (!parsed.success) go("/properties", "error", "Nama dan alamat properti wajib diisi.");
   const propertyId = id();
-  await db.transaction(async (tx) => {
-    await tx.insert(properties).values({ id: propertyId, organizationId: ctx.organizationId, ...parsed.data });
-    await audit(tx, ctx.organizationId, ctx.userId, "property.created", "property", propertyId);
-  });
+  try {
+    await db.transaction(async (tx) => {
+      const [organization] = await tx.select({ plan: organizations.plan }).from(organizations)
+        .where(eq(organizations.id, ctx.organizationId)).for("update").limit(1);
+      if (!organization) throw new Error("WORKSPACE_NOT_FOUND");
+      const propertyLimit = PLAN_LIMITS[organization.plan].properties;
+      if (propertyLimit !== null) {
+        const [propertyCount] = await tx.select({ total: count() }).from(properties)
+          .where(eq(properties.organizationId, ctx.organizationId));
+        if (propertyCount.total >= propertyLimit) throw new Error("FREE_LIMIT_PROPERTIES");
+      }
+      await tx.insert(properties).values({ id: propertyId, organizationId: ctx.organizationId, ...parsed.data });
+      await audit(tx, ctx.organizationId, ctx.userId, "property.created", "property", propertyId);
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "FREE_LIMIT_PROPERTIES") go("/properties", "error", "Paket Free dibatasi 1 properti. Ajukan upgrade ke Pro untuk menambah properti.");
+    throw error;
+  }
   revalidatePath("/properties");
   revalidatePath("/dashboard");
   go("/properties", "notice", "Properti berhasil ditambahkan.");
@@ -209,6 +252,15 @@ export async function createRoom(form: FormData) {
   const roomId = id();
   try {
     await db.transaction(async (tx) => {
+      const [organization] = await tx.select({ plan: organizations.plan }).from(organizations)
+        .where(eq(organizations.id, ctx.organizationId)).for("update").limit(1);
+      if (!organization) throw new Error("WORKSPACE_NOT_FOUND");
+      const roomLimit = PLAN_LIMITS[organization.plan].rooms;
+      if (roomLimit !== null) {
+        const [roomCount] = await tx.select({ total: count() }).from(rooms)
+          .where(eq(rooms.organizationId, ctx.organizationId));
+        if (roomCount.total >= roomLimit) throw new Error("FREE_LIMIT_ROOMS");
+      }
       await tx.insert(rooms).values({
         id: roomId, organizationId: ctx.organizationId, propertyId: property.id, code: parsed.data.code,
         type: parsed.data.type, floor: parsed.data.floor || null, monthlyRent: parsed.data.monthlyRent,
@@ -216,7 +268,8 @@ export async function createRoom(form: FormData) {
       });
       await audit(tx, ctx.organizationId, ctx.userId, "room.created", "room", roomId);
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message === "FREE_LIMIT_ROOMS") go("/rooms", "error", "Paket Free dibatasi 10 kamar. Ajukan upgrade ke Pro untuk menambah kamar.");
     go("/rooms", "error", "Kode kamar tersebut sudah dipakai pada properti ini.");
   }
   revalidatePath("/rooms");
@@ -573,3 +626,78 @@ export async function assignMaintenanceTicket(form: FormData) {
   go("/maintenance", "notice", "Penugasan diperbarui.");
 }
 
+
+
+export async function createPlanRequest() {
+  const ctx = await requireWorkspace(["owner"]);
+  const requestId = id();
+  try {
+    await db.transaction(async (tx) => {
+      const [organization] = await tx.select({ plan: organizations.plan }).from(organizations)
+        .where(eq(organizations.id, ctx.organizationId)).for("update").limit(1);
+      if (!organization) throw new Error("WORKSPACE_NOT_FOUND");
+      if (organization.plan === "pro") throw new Error("ALREADY_PRO");
+      const [pendingRequest] = await tx.select({ id: planRequests.id }).from(planRequests).where(and(
+        eq(planRequests.organizationId, ctx.organizationId), eq(planRequests.status, "pending"),
+      )).limit(1);
+      if (pendingRequest) throw new Error("REQUEST_PENDING");
+      await tx.insert(planRequests).values({
+        id: requestId, organizationId: ctx.organizationId, requestedBy: ctx.userId, status: "pending",
+      });
+      await audit(tx, ctx.organizationId, ctx.userId, "plan.upgrade_requested", "plan_request", requestId, { from: "free", to: "pro" });
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "ALREADY_PRO") go("/plan", "notice", "Workspace ini sudah menggunakan Paket Pro.");
+    if (error instanceof Error && error.message === "REQUEST_PENDING") go("/plan", "error", "Permintaan upgrade masih menunggu tinjauan admin.");
+    throw error;
+  }
+  revalidatePath("/plan");
+  revalidatePath("/admin/plans");
+  go("/plan", "notice", "Permintaan upgrade Pro berhasil dikirim untuk ditinjau admin.");
+}
+
+export async function reviewPlanRequest(form: FormData) {
+  const admin = await requirePlatformAdmin();
+  const parsed = z.object({
+    requestId: requiredText(80),
+    decision: z.enum(["approved", "rejected"]),
+    note: z.string().trim().max(500),
+  }).safeParse({
+    requestId: value(form, "requestId"),
+    decision: value(form, "decision"),
+    note: value(form, "note"),
+  });
+  if (!parsed.success) go("/admin/plans", "error", "Data tinjauan tidak valid.");
+
+  try {
+    await db.transaction(async (tx) => {
+      const [request] = await tx.select().from(planRequests).where(eq(planRequests.id, parsed.data.requestId)).for("update").limit(1);
+      if (!request || request.status !== "pending") throw new Error("REQUEST_NOT_PENDING");
+      const [organization] = await tx.select({ id: organizations.id }).from(organizations)
+        .where(eq(organizations.id, request.organizationId)).for("update").limit(1);
+      if (!organization) throw new Error("WORKSPACE_NOT_FOUND");
+
+      const reviewedAt = new Date();
+      await tx.update(planRequests).set({
+        status: parsed.data.decision, reviewedBy: admin.userId, reviewedAt,
+        reviewNote: parsed.data.note || null, updatedAt: reviewedAt,
+      }).where(eq(planRequests.id, request.id));
+      if (parsed.data.decision === "approved") {
+        await tx.update(organizations).set({ plan: "pro", updatedAt: reviewedAt })
+          .where(eq(organizations.id, request.organizationId));
+      }
+      await audit(tx, request.organizationId, admin.userId, "plan.upgrade_reviewed", "plan_request", request.id, {
+        decision: parsed.data.decision, note: parsed.data.note || null,
+      });
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "REQUEST_NOT_PENDING") go("/admin/plans", "error", "Permintaan ini sudah ditinjau atau tidak ditemukan.");
+    if (error instanceof Error && error.message === "WORKSPACE_NOT_FOUND") go("/admin/plans", "error", "Workspace tidak ditemukan.");
+    throw error;
+  }
+
+  revalidatePath("/admin/plans");
+  revalidatePath("/plan");
+  revalidatePath("/dashboard");
+  go("/admin/plans", "notice", parsed.data.decision === "approved" ? "Paket Pro berhasil diaktifkan." : "Permintaan upgrade ditolak.");
+}

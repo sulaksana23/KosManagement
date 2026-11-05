@@ -12,6 +12,8 @@ Gambar di atas adalah mockup visual. Aplikasi berjalan menggunakan data yang ter
 
 - Registrasi, login, sesi, dan workspace pemilik.
 - Pengelolaan akses pemilik, pengelola, keuangan, dan staf untuk akun yang sudah mendaftar.
+- Paket Free (1 properti, 10 kamar, 3 anggota) dan Pro tanpa batas dengan pemeriksaan kuota di server.
+- Permintaan upgrade Pro dan persetujuan admin manual dengan audit log.
 - Isolasi query berdasarkan workspace dari sesi server.
 - Pencatatan properti, kamar, dan penghuni; status kamar bisa diperbarui.
 - Kontrak dengan validasi server dan penguncian kamar untuk mencegah tanggal aktif bertumpuk.
@@ -59,6 +61,8 @@ npm run dev
 ```
 
 Buka `http://localhost:3000`, pilih **Daftar**, lalu buat workspace. Untuk memakai Neon, isi `DATABASE_URL` dari dashboard Neon sebelum menjalankan migration.
+
+Paket Free mencakup 1 properti, 10 kamar, dan 3 anggota (termasuk pemilik serta undangan aktif). Paket Pro membuka kuota tersebut tanpa batas. Untuk menerima permintaan upgrade Pro, tambahkan email admin ke `KOSMANAGER_ADMIN_EMAILS` pada environment aplikasi, lalu buka `/admin/plans`. Aktivasi saat ini ditinjau manual; pembayaran otomatis dan harga belum dikonfigurasi.
 
 Untuk menambahkan staf: pemilik membuat tautan dari menu **Anggota** lalu membagikannya secara pribadi. Penerima dapat mendaftar atau masuk dengan email tujuan undangan; tautan hanya berlaku sekali selama 7 hari. Email tidak dikirim otomatis.
 

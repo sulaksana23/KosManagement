@@ -63,6 +63,8 @@ export const authVerifications = pgTable("verification", {
 }, (table) => [index("verification_identifier_idx").on(table.identifier)]);
 
 export const memberRole = pgEnum("member_role", ["owner", "manager", "finance", "staff", "tenant"]);
+export const organizationPlan = pgEnum("organization_plan", ["free", "pro"]);
+export const planRequestStatus = pgEnum("plan_request_status", ["pending", "approved", "rejected"]);
 export const roomStatus = pgEnum("room_status", ["available", "reserved", "occupied", "maintenance", "inactive"]);
 export const leaseStatus = pgEnum("lease_status", ["draft", "active", "ended", "cancelled"]);
 export const invoiceStatus = pgEnum("invoice_status", ["unpaid", "partial", "paid", "overdue", "cancelled"]);
@@ -75,6 +77,7 @@ export const organizations = pgTable("organization", {
   name: text("name").notNull(),
   timezone: text("timezone").notNull().default("Asia/Makassar"),
   currency: text("currency").notNull().default("IDR"),
+  plan: organizationPlan("plan").notNull().default("free"),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -284,6 +287,21 @@ export const invitations = pgTable("invitation", {
   createdBy: text("created_by").references(() => authUsers.id, { onDelete: "set null" }),
   createdAt: createdAt(),
 }, (table) => [index("invitation_organization_idx").on(table.organizationId, table.email)]);
+
+export const planRequests = pgTable("plan_request", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  requestedBy: text("requested_by").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
+  status: planRequestStatus("status").notNull().default("pending"),
+  reviewedBy: text("reviewed_by").references(() => authUsers.id, { onDelete: "set null" }),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  reviewNote: text("review_note"),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (table) => [
+  index("plan_request_organization_status_created_idx").on(table.organizationId, table.status, table.createdAt),
+  index("plan_request_requester_idx").on(table.requestedBy),
+]);
 
 export const authSchema = {
   user: authUsers,
