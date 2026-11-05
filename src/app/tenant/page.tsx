@@ -57,14 +57,16 @@ export default async function TenantPortalPage({ searchParams }: { searchParams:
           const pendingAmount = pendingByInvoice.get(invoice.id) ?? BigInt(0);
           const balance = BigInt(invoice.amount) - BigInt(invoice.paidAmount);
           const availableToPay = balance - pendingAmount;
-          const displayedStatus = balance > BigInt(0) && invoice.dueAt < today ? "overdue" : invoice.status;
+          const daysUntilDue = Math.round((Date.parse(`${invoice.dueAt}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000);
+          const displayedStatus = balance > BigInt(0) && invoice.status !== "cancelled" && daysUntilDue < 0 ? "overdue" : invoice.status;
           return <article key={invoice.id} className="grid gap-3 p-4">
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div><p className="m-0 font-semibold text-[#24372e]">Kamar {roomCode} · Periode {formatDate(invoice.periodStart)}</p><p className="muted mb-0 mt-1 text-xs">Jatuh tempo {formatDate(invoice.dueAt)}</p></div>
               <StatusBadge status={displayedStatus} />
             </div>
             <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs"><span>Total <strong>{formatIDR(invoice.amount)}</strong></span><span>Terbayar <strong>{formatIDR(invoice.paidAmount)}</strong></span><span>Sisa <strong>{formatIDR(balance)}</strong></span></div>
-            {pendingAmount > BigInt(0) && <p className="notice m-0 border border-[#eadbb5] bg-[#fbf7ec] text-xs text-[#755b28]">Bukti {formatIDR(pendingAmount)} sedang menunggu verifikasi.</p>}
+            {balance > BigInt(0) && invoice.status !== "cancelled" && daysUntilDue >= 0 && daysUntilDue <= 7 && <p className="notice m-0 border border-[#eadbb5] bg-[#fbf7ec] text-xs text-[#755b28]">{daysUntilDue === 0 ? "Tagihan jatuh tempo hari ini." : `Tagihan jatuh tempo dalam ${daysUntilDue} hari.`} Silakan bayar sebelum {formatDate(invoice.dueAt)}.</p>}
+            {pendingAmount > BigInt(0) && <p className="notice m-0 border border-[#eadbb5] bg-[#fbf7ec] text-xs text-[#755b28]">Pembayaran {formatIDR(pendingAmount)} sedang menunggu verifikasi.</p>}
             {availableToPay > BigInt(0) && invoice.status !== "cancelled" && <form action={submitTenantPayment} className="grid gap-2 rounded-lg border border-[#e8eeeb] bg-[#fbfcfb] p-3 sm:grid-cols-[minmax(120px,180px)_minmax(180px,1fr)_auto] sm:items-end">
               <input type="hidden" name="invoiceId" value={invoice.id} />
               <TextField name="amount" label="Nominal bayar (Rp)" type="number" min="1" max={availableToPay.toString()} defaultValue={availableToPay.toString()} required />
