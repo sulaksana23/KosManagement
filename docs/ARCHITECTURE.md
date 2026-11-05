@@ -32,7 +32,7 @@ Better Auth `1.7.17` dengan adapter Drizzle `1.7.17`; menggunakan email dan kata
 
 ### Penyimpanan file
 
-Belum dipilih. Upload dokumen/foto tidak aktif. Pilih object storage privat yang mendukung signed URL, pembatasan ukuran/jenis file, dan kontrol akses sebelum mengaktifkannya. Jangan menggunakan URL publik permanen untuk dokumen pribadi.
+Upload dokumen/foto tidak aktif dan proyek tidak bergantung pada object storage. Penghuni melaporkan pembayaran memakai nominal dan nomor referensi; data masuk sebagai pembayaran pending dan harus diverifikasi oleh staf keuangan/pengelola. Bila lampiran diaktifkan nanti, pilih penyimpanan privat terlebih dahulu dan akseskan melalui route server yang memeriksa sesi serta kepemilikan. Ikon UI memakai SVG dari Lucide.
 
 ### Pembayaran dan notifikasi
 
@@ -55,7 +55,7 @@ Untuk MVP, sebagian query halaman dan mutasi masih dekat dengan route/server act
 - Kebocoran lintas workspace melalui query yang tidak menyertakan scope organisasi.
 - Overlap kontrak dan tagihan ganda akibat race condition; gunakan constraint/transaksi/idempotency yang sesuai.
 - Ketidakcocokan timezone saat periode tagihan dan tanggal kontrak dihitung.
-- Bukti bayar dan dokumen identitas terbuka melalui URL publik atau pemeriksaan kepemilikan yang lemah.
+- Lampiran bukti bayar belum tersedia; jangan menambah unggahan dokumen pribadi tanpa penyimpanan privat dan pemeriksaan kepemilikan.
 - Ringkasan dashboard tidak cocok dengan data transaksi jika query/definisi metrik tidak konsisten.
 
 

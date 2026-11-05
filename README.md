@@ -66,6 +66,10 @@ Paket Free mencakup 1 properti, 10 kamar, dan 3 anggota (termasuk pemilik serta 
 
 Untuk menambahkan staf: pemilik membuat tautan dari menu **Anggota** lalu membagikannya secara pribadi. Penerima dapat mendaftar atau masuk dengan email tujuan undangan; tautan hanya berlaku sekali selama 7 hari. Email tidak dikirim otomatis.
 
+### Portal penghuni
+
+Isi email pada profil penghuni, lalu pilih **Undang ke portal** di daftar penghuni dan bagikan tautan yang dibuat. Penghuni dapat membuat akun atau masuk dengan email tersebut. Setelah masuk, penghuni melihat kontrak, tagihan, riwayat pembayaran, dan tiket keluhannya sendiri. Untuk melaporkan pembayaran, isi nominal serta referensi; status tetap menunggu sampai staf memverifikasinya di menu **Tagihan & bayar**. File foto bukti belum didukung.
+
 ### Data demo (opsional)
 
 Set `SEED_OWNER_EMAIL` dan `SEED_OWNER_PASSWORD` di `.env.local`, lalu jalankan:
@@ -91,7 +95,7 @@ npm run db:push     # sinkronisasi schema untuk development saja
 
 ## Batas MVP saat ini
 
-Email undangan tidak dikirim otomatis; pemilik membagikan tautan undangan sekali pakai melalui kanal pribadi. Satu akun hanya dapat terhubung ke satu workspace saat ini. Reset kata sandi belum dihubungkan ke layanan email. Upload bukti bayar/foto belum aktif karena object storage privat belum dikonfigurasi. Portal penghuni, tanda tangan kontrak, pengingat terjadwal, QRIS/payment gateway, dan rekonsiliasi otomatis belum tersedia. Pembayaran yang dicatat saat ini adalah pembayaran manual yang diverifikasi anggota berizin.
+Email undangan tidak dikirim otomatis; pemilik membagikan tautan undangan sekali pakai melalui kanal pribadi. Satu akun hanya dapat terhubung ke satu workspace saat ini. Reset kata sandi belum dihubungkan ke layanan email. Portal penghuni kini menampilkan kontrak, tagihan, pembayaran, dan keluhan. Penghuni dapat melaporkan pembayaran dengan nominal dan referensi; pembayaran tetap menunggu sampai diverifikasi staf berizin. Lampiran foto bukti belum tersedia karena proyek tidak memakai layanan penyimpanan file. Tanda tangan kontrak, pengingat terjadwal, QRIS/payment gateway, dan rekonsiliasi otomatis belum tersedia. Ikon UI memakai Lucide yang dirender sebagai SVG.
 
 Jangan menaruh secret, password demo nyata, data penghuni, atau dokumen pribadi di GitHub.
 

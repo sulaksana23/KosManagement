@@ -1,6 +1,6 @@
 "use server";
 
-import { and, count, eq, gte, gt, isNull, lte, or } from "drizzle-orm";
+import { and, count, eq, gte, gt, isNull, lte, or, sql, sum } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -24,7 +24,7 @@ import {
   payments,
   planRequests,
 } from "@/db/schema";
-import { requireUser, requireWorkspace } from "@/server/context";
+import { getServerSession, requireTenantWorkspace, requireUser, requireWorkspace } from "@/server/context";
 import { id, monthRange, todayISO } from "@/lib/format";
 import { PLAN_LIMITS } from "@/lib/plans";
 import { requirePlatformAdmin } from "@/server/platform-admin";
@@ -138,26 +138,38 @@ export async function acceptInvitation(token: string) {
   const parsed = z.string().regex(/^[a-f0-9]{64}$/i).safeParse(token);
   if (!parsed.success) return { ok: false, message: "Tautan undangan tidak valid." };
   const hash = await tokenHash(parsed.data);
+  let invitationRole: "owner" | "manager" | "finance" | "staff" | "tenant" = "tenant";
   try {
     await db.transaction(async (tx) => {
       const [invitation] = await tx.select().from(invitations).where(eq(invitations.tokenHash, hash)).for("update").limit(1);
       if (!invitation || invitation.acceptedAt || invitation.expiresAt <= new Date()) throw new Error("INVITATION_INVALID");
+      invitationRole = invitation.role;
       if (invitation.email.toLowerCase() !== session.user.email.toLowerCase()) throw new Error("INVITATION_EMAIL_MISMATCH");
       const [existing] = await tx.select({ id: members.id }).from(members).where(eq(members.userId, session.user.id)).limit(1);
       if (existing) throw new Error("ALREADY_MEMBER");
+      let tenantId: string | undefined;
+      if (invitation.role === "tenant") {
+        const tenantProfiles = await tx.select({ id: tenants.id, userId: tenants.userId }).from(tenants).where(and(
+          eq(tenants.organizationId, invitation.organizationId), sql`lower(${tenants.email}) = ${invitation.email.toLowerCase()}`,
+        )).for("update").limit(2);
+        if (tenantProfiles.length !== 1 || tenantProfiles[0].userId) throw new Error("TENANT_PROFILE_INVALID");
+        tenantId = tenantProfiles[0].id;
+        await tx.update(tenants).set({ userId: session.user.id, updatedAt: new Date() }).where(eq(tenants.id, tenantId));
+      }
       const memberId = id();
       await tx.insert(members).values({ id: memberId, organizationId: invitation.organizationId, userId: session.user.id, role: invitation.role });
       await tx.update(invitations).set({ acceptedAt: new Date() }).where(eq(invitations.id, invitation.id));
-      await audit(tx, invitation.organizationId, session.user.id, "invitation.accepted", "invitation", invitation.id, { memberId, role: invitation.role });
+      await audit(tx, invitation.organizationId, session.user.id, "invitation.accepted", "invitation", invitation.id, { memberId, role: invitation.role, tenantId });
     });
   } catch (error) {
     if (error instanceof Error && error.message === "INVITATION_EMAIL_MISMATCH") return { ok: false, message: "Email akun ini tidak sesuai dengan email undangan." };
     if (error instanceof Error && error.message === "ALREADY_MEMBER") return { ok: false, message: "Akun ini sudah terhubung ke workspace lain." };
+    if (error instanceof Error && error.message === "TENANT_PROFILE_INVALID") return { ok: false, message: "Profil penghuni untuk undangan ini tidak tersedia atau sudah terhubung." };
     return { ok: false, message: "Undangan tidak berlaku, sudah dipakai, atau telah kedaluwarsa." };
   }
   revalidatePath("/dashboard");
   revalidatePath("/team");
-  return { ok: true, message: "Undangan diterima." };
+  return { ok: true, message: "Undangan diterima.", role: invitationRole };
 }
 
 export async function revokeInvitation(form: FormData) {
@@ -307,7 +319,7 @@ export async function createTenant(form: FormData) {
     fullName: requiredText(120), phone: requiredText(30), email: z.union([z.literal(""), z.email()]).default(""),
     emergencyContactName: z.string().max(120), emergencyContactPhone: z.string().max(30),
   }).safeParse({
-    fullName: value(form, "fullName"), phone: value(form, "phone"), email: value(form, "email"),
+    fullName: value(form, "fullName"), phone: value(form, "phone"), email: value(form, "email").toLowerCase(),
     emergencyContactName: value(form, "emergencyContactName"), emergencyContactPhone: value(form, "emergencyContactPhone"),
   });
   if (!parsed.success) go("/tenants", "error", "Nama dan nomor telepon wajib; email harus valid.");
@@ -700,4 +712,215 @@ export async function reviewPlanRequest(form: FormData) {
   revalidatePath("/plan");
   revalidatePath("/dashboard");
   go("/admin/plans", "notice", parsed.data.decision === "approved" ? "Paket Pro berhasil diaktifkan." : "Permintaan upgrade ditolak.");
+}
+
+
+export async function createTenantPortalInvite(
+  _previousState: { error?: string; inviteLink?: string },
+  form: FormData,
+): Promise<{ error?: string; inviteLink?: string }> {
+  const ctx = await requireWorkspace(["owner", "manager"]);
+  const parsed = z.object({ tenantId: requiredText(80) }).safeParse({ tenantId: value(form, "tenantId") });
+  if (!parsed.success) return { error: "Profil penghuni tidak valid." };
+
+  const token = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
+  const invitationId = id();
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  try {
+    await db.transaction(async (tx) => {
+      const [organization] = await tx.select({ plan: organizations.plan }).from(organizations)
+        .where(eq(organizations.id, ctx.organizationId)).for("update").limit(1);
+      if (!organization) throw new Error("WORKSPACE_NOT_FOUND");
+
+      const [tenant] = await tx.select().from(tenants).where(and(
+        eq(tenants.id, parsed.data.tenantId), eq(tenants.organizationId, ctx.organizationId),
+      )).for("update").limit(1);
+      if (!tenant) throw new Error("TENANT_NOT_FOUND");
+      if (tenant.userId) throw new Error("TENANT_PORTAL_ACTIVE");
+      if (!tenant.email) throw new Error("TENANT_EMAIL_REQUIRED");
+      const email = tenant.email.trim().toLowerCase();
+
+      const [existingMember] = await tx.select({ id: members.id }).from(members).innerJoin(authUsers, eq(members.userId, authUsers.id))
+        .where(sql`lower(${authUsers.email}) = ${email}`).limit(1);
+      if (existingMember) throw new Error("ACCOUNT_ALREADY_LINKED");
+      const [activeInvitation] = await tx.select({ id: invitations.id }).from(invitations).where(and(
+        eq(invitations.organizationId, ctx.organizationId), sql`lower(${invitations.email}) = ${email}`,
+        isNull(invitations.acceptedAt), gt(invitations.expiresAt, new Date()),
+      )).limit(1);
+      if (activeInvitation) throw new Error("INVITATION_ALREADY_PENDING");
+
+      const memberLimit = PLAN_LIMITS[organization.plan].members;
+      if (memberLimit !== null) {
+        const [memberCount] = await tx.select({ total: count() }).from(members)
+          .where(eq(members.organizationId, ctx.organizationId));
+        const [invitationCount] = await tx.select({ total: count() }).from(invitations).where(and(
+          eq(invitations.organizationId, ctx.organizationId), isNull(invitations.acceptedAt), gt(invitations.expiresAt, new Date()),
+        ));
+        if (memberCount.total + invitationCount.total >= memberLimit) throw new Error("FREE_LIMIT_MEMBERS");
+      }
+
+      await tx.insert(invitations).values({
+        id: invitationId, organizationId: ctx.organizationId, email, role: "tenant",
+        tokenHash: await tokenHash(token), expiresAt, createdBy: ctx.userId,
+      });
+      await audit(tx, ctx.organizationId, ctx.userId, "tenant.portal_invited", "tenant", tenant.id, { email, expiresAt });
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "TENANT_NOT_FOUND") return { error: "Profil penghuni tidak ditemukan." };
+    if (error instanceof Error && error.message === "TENANT_PORTAL_ACTIVE") return { error: "Akun portal penghuni ini sudah aktif." };
+    if (error instanceof Error && error.message === "TENANT_EMAIL_REQUIRED") return { error: "Tambahkan email penghuni sebelum mengirim undangan portal." };
+    if (error instanceof Error && error.message === "ACCOUNT_ALREADY_LINKED") return { error: "Email ini sudah terhubung ke akun workspace lain." };
+    if (error instanceof Error && error.message === "INVITATION_ALREADY_PENDING") return { error: "Undangan aktif untuk email ini sudah tersedia." };
+    if (error instanceof Error && error.message === "FREE_LIMIT_MEMBERS") return { error: "Kuota Paket Free sudah penuh. Upgrade ke Pro untuk menambah akun." };
+    return { error: "Undangan portal gagal dibuat. Coba lagi." };
+  }
+
+  revalidatePath("/team");
+  revalidatePath("/tenants");
+  const configuredBaseUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.BETTER_AUTH_URL ?? "http://localhost:3000";
+  const baseUrl = configuredBaseUrl.endsWith("/") ? configuredBaseUrl.slice(0, -1) : configuredBaseUrl;
+  return { inviteLink: baseUrl + "/invite?token=" + encodeURIComponent(token) };
+}
+
+export async function createTenantTicket(form: FormData) {
+  const ctx = await requireTenantWorkspace();
+  const parsed = z.object({
+    category: requiredText(60),
+    description: requiredText(1000),
+  }).safeParse({ category: value(form, "category"), description: value(form, "description") });
+  if (!parsed.success) go("/tenant", "error", "Isi kategori dan deskripsi keluhan.");
+
+  const today = todayISO();
+  const [lease] = await db.select({ id: leases.id, roomId: leases.roomId }).from(leases).where(and(
+    eq(leases.organizationId, ctx.organizationId), eq(leases.tenantId, ctx.tenant.id), eq(leases.status, "active"),
+    lte(leases.startsAt, today), or(isNull(leases.endsAt), gte(leases.endsAt, today)),
+  )).orderBy(leases.startsAt).limit(1);
+  if (!lease) go("/tenant", "error", "Tiket hanya dapat dibuat untuk kontrak yang sedang aktif.");
+
+  const ticketId = id();
+  await db.transaction(async (tx) => {
+    await tx.insert(maintenanceTickets).values({
+      id: ticketId, organizationId: ctx.organizationId, tenantId: ctx.tenant.id, roomId: lease.roomId,
+      category: parsed.data.category, description: parsed.data.description, priority: "normal", status: "new",
+    });
+    await audit(tx, ctx.organizationId, ctx.userId, "maintenance.created_by_tenant", "maintenance_ticket", ticketId);
+  });
+  revalidatePath("/tenant");
+  revalidatePath("/maintenance");
+  go("/tenant", "notice", "Keluhan berhasil dikirim.");
+}
+
+export async function getAuthenticatedLandingPath() {
+  const session = await getServerSession();
+  if (!session) return "/login";
+  const [membership] = await db.select({ role: members.role }).from(members)
+    .where(eq(members.userId, session.user.id)).limit(1);
+  if (!membership) return "/setup";
+  return membership.role === "tenant" ? "/tenant" : "/dashboard";
+}
+export async function submitTenantPayment(form: FormData) {
+  const ctx = await requireTenantWorkspace();
+  const parsed = z.object({
+    invoiceId: z.string().uuid(), amount: positiveMoney, reference: z.string().trim().max(120),
+  }).safeParse({
+    invoiceId: value(form, "invoiceId"), amount: value(form, "amount"), reference: value(form, "reference"),
+  });
+  if (!parsed.success) go("/tenant", "error", "Isi nominal dan referensi pembayaran dengan benar.");
+
+  try {
+    await db.transaction(async (tx) => {
+      const [invoice] = await tx.select().from(invoices).where(and(
+        eq(invoices.id, parsed.data.invoiceId), eq(invoices.organizationId, ctx.organizationId),
+      )).for("update").limit(1);
+      if (!invoice || invoice.status === "cancelled") throw new Error("INVOICE_INVALID");
+
+      const [lease] = await tx.select({ tenantId: leases.tenantId }).from(leases).where(and(
+        eq(leases.id, invoice.leaseId), eq(leases.organizationId, ctx.organizationId),
+      )).limit(1);
+      if (!lease || lease.tenantId !== ctx.tenant.id) throw new Error("INVOICE_NOT_OWNED");
+
+      const amount = BigInt(parsed.data.amount);
+      const remaining = BigInt(invoice.amount) - BigInt(invoice.paidAmount);
+      const [pending] = await tx.select({ total: sum(payments.amount) }).from(payments).where(and(
+        eq(payments.invoiceId, invoice.id), eq(payments.organizationId, ctx.organizationId), eq(payments.status, "pending"),
+      ));
+      const available = remaining - BigInt(pending.total ?? "0");
+      if (amount <= BigInt(0) || amount > available) throw new Error("AMOUNT_EXCEEDS_BALANCE");
+
+      const paymentId = id();
+      await tx.insert(payments).values({
+        id: paymentId, organizationId: ctx.organizationId, invoiceId: invoice.id, amount: parsed.data.amount,
+        method: "transfer", reference: parsed.data.reference || null, status: "pending",
+        note: "Konfirmasi pembayaran dikirim dari portal penghuni.",
+      });
+      await audit(tx, ctx.organizationId, ctx.userId, "payment.declared_by_tenant", "payment", paymentId, {
+        invoiceId: invoice.id, amount: parsed.data.amount, reference: parsed.data.reference || null,
+      });
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "INVOICE_INVALID") go("/tenant", "error", "Tagihan tidak tersedia.");
+    if (error instanceof Error && error.message === "INVOICE_NOT_OWNED") go("/tenant", "error", "Tagihan tidak ditemukan di akun ini.");
+    if (error instanceof Error && error.message === "AMOUNT_EXCEEDS_BALANCE") go("/tenant", "error", "Nominal melebihi sisa tagihan setelah pembayaran yang menunggu.");
+    go("/tenant", "error", "Konfirmasi pembayaran gagal dikirim. Coba lagi.");
+  }
+
+  revalidatePath("/tenant");
+  revalidatePath("/billing");
+  revalidatePath("/dashboard");
+  go("/tenant", "notice", "Konfirmasi pembayaran terkirim dan menunggu verifikasi pengelola.");
+}
+export async function reviewTenantPayment(form: FormData) {
+  const ctx = await requireWorkspace(["owner", "manager", "finance"]);
+  const parsed = z.object({
+    paymentId: requiredText(80), decision: z.enum(["verify", "reject"]), note: z.string().trim().max(500),
+  }).safeParse({
+    paymentId: value(form, "paymentId"), decision: value(form, "decision"), note: value(form, "note"),
+  });
+  if (!parsed.success) go("/billing", "error", "Data tinjauan pembayaran tidak valid.");
+
+  try {
+    await db.transaction(async (tx) => {
+      const [payment] = await tx.select().from(payments).where(and(
+        eq(payments.id, parsed.data.paymentId), eq(payments.organizationId, ctx.organizationId),
+      )).for("update").limit(1);
+      if (!payment || payment.status !== "pending") throw new Error("PAYMENT_NOT_PENDING");
+      const [invoice] = await tx.select().from(invoices).where(and(
+        eq(invoices.id, payment.invoiceId), eq(invoices.organizationId, ctx.organizationId),
+      )).for("update").limit(1);
+      if (!invoice || invoice.status === "cancelled") throw new Error("INVOICE_INVALID");
+
+      if (parsed.data.decision === "verify") {
+        const remaining = BigInt(invoice.amount) - BigInt(invoice.paidAmount);
+        const amount = BigInt(payment.amount);
+        if (amount <= BigInt(0) || amount > remaining) throw new Error("PAYMENT_AMOUNT_EXCEEDS_BALANCE");
+        const paidAmount = BigInt(invoice.paidAmount) + amount;
+        await tx.update(payments).set({ status: "verified", verifiedBy: ctx.userId })
+          .where(eq(payments.id, payment.id));
+        await tx.update(invoices).set({
+          paidAmount: paidAmount.toString(),
+          status: paidAmount === BigInt(invoice.amount) ? "paid" : "partial",
+          updatedAt: new Date(),
+        }).where(eq(invoices.id, invoice.id));
+        await audit(tx, ctx.organizationId, ctx.userId, "payment.tenant_declaration_verified", "payment", payment.id, {
+          invoiceId: invoice.id, amount: payment.amount,
+        });
+      } else {
+        const reason = parsed.data.note || "Konfirmasi pembayaran ditolak. Hubungi pengelola untuk detail.";
+        await tx.update(payments).set({ status: "rejected", note: reason })
+          .where(eq(payments.id, payment.id));
+        await audit(tx, ctx.organizationId, ctx.userId, "payment.tenant_declaration_rejected", "payment", payment.id, {
+          invoiceId: invoice.id, amount: payment.amount, reason,
+        });
+      }
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "PAYMENT_NOT_PENDING") go("/billing", "error", "Pembayaran sudah ditinjau atau tidak lagi tersedia.");
+    if (error instanceof Error && error.message === "INVOICE_INVALID") go("/billing", "error", "Tagihan pembayaran tidak lagi tersedia.");
+    if (error instanceof Error && error.message === "PAYMENT_AMOUNT_EXCEEDS_BALANCE") go("/billing", "error", "Nominal pembayaran melebihi sisa tagihan. Periksa pembayaran lain terlebih dahulu.");
+    go("/billing", "error", "Tinjauan pembayaran gagal. Coba lagi.");
+  }
+  revalidatePath("/billing");
+  revalidatePath("/tenant");
+  revalidatePath("/dashboard");
+  go("/billing", "notice", parsed.data.decision === "verify" ? "Pembayaran diverifikasi dan saldo tagihan diperbarui." : "Konfirmasi pembayaran ditolak.");
 }

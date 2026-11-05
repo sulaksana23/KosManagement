@@ -15,7 +15,7 @@ export function AcceptInvitationButton({ token }: { token: string }) {
     startTransition(async () => {
       const result = await acceptInvitation(token);
       if (result.ok) {
-        router.replace("/dashboard");
+        router.replace(result.role === "tenant" ? "/tenant" : "/dashboard");
         router.refresh();
       } else setMessage(result.message);
     });

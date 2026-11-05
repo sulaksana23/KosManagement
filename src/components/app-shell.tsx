@@ -22,9 +22,12 @@ const navigation = [
   { label: "Laporan", href: "/reports", icon: Settings, roles: ["owner", "manager", "finance"] },
   { label: "Anggota", href: "/team", icon: Users, roles: ["owner"] },
   { label: "Paket", href: "/plan", icon: Crown, roles: ["owner"] },
+  { label: "Portal penghuni", href: "/tenant", icon: Home, roles: ["tenant"] },
 ];
 
 type Props = { children: React.ReactNode; userName: string; workspaceName: string; role: string };
+
+const roleLabels: Record<string, string> = { owner: "Pemilik", manager: "Pengelola", finance: "Keuangan", staff: "Staf", tenant: "Penghuni" };
 
 export function AppShell({ children, userName, workspaceName, role }: Props) {
   const pathname = usePathname();
@@ -64,7 +67,7 @@ export function AppShell({ children, userName, workspaceName, role }: Props) {
       <div className="mt-auto border-t border-[#35544b] pt-4">
         <div className="flex items-center gap-2.5 px-2">
           <div className="grid size-8 shrink-0 place-items-center rounded-full bg-[#d4b79e] text-[10px] font-bold text-[#49382d]">{userName.slice(0, 2).toUpperCase()}</div>
-          <div className="min-w-0 flex-1"><p className="truncate text-xs font-semibold text-[#f0f6f2]">{userName}</p><p className="truncate text-[10px] text-[#a7bab1]">{workspaceName} · {role}</p></div>
+          <div className="min-w-0 flex-1"><p className="truncate text-xs font-semibold text-[#f0f6f2]">{userName}</p><p className="truncate text-[10px] text-[#a7bab1]">{workspaceName} · {roleLabels[role] ?? role}</p></div>
           <button onClick={signOut} disabled={signingOut} className="grid size-8 place-items-center rounded-md text-[#aec0b7] hover:bg-[#294a42]" title="Keluar"><LogOut size={16} /></button>
         </div>
       </div>

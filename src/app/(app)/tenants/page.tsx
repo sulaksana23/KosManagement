@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { tenants } from "@/db/schema";
 import { EmptyState, FormCard, PageHeading, PageNotice, TextField } from "@/components/ui";
 import { createTenant } from "@/server/actions";
+import { TenantPortalInviteForm } from "@/components/tenant-portal-invite-form";
 import { requireWorkspace } from "@/server/context";
 
 export default async function TenantsPage({ searchParams }: { searchParams: Promise<{ notice?: string; error?: string }> }) {
@@ -25,7 +26,7 @@ export default async function TenantsPage({ searchParams }: { searchParams: Prom
     </FormCard>
     <section className="surface overflow-hidden">
       <div className="flex items-center gap-2 border-b border-[#e8eeeb] px-4 py-3"><Users size={16} className="text-[#438363]" /><h2 className="surface-title m-0">Daftar penghuni</h2></div>
-      {list.length === 0 ? <EmptyState title="Belum ada penghuni" description="Tambahkan penghuni sebelum membuat kontrak sewa." /> : <div className="table-wrap"><table className="data-table"><thead><tr><th>NAMA</th><th>TELEPON</th><th>EMAIL</th><th>KONTAK DARURAT</th><th>DITAMBAHKAN</th></tr></thead><tbody>{list.map((tenant) => <tr key={tenant.id}><td className="font-semibold">{tenant.fullName}</td><td>{tenant.phone}</td><td>{tenant.email ?? "—"}</td><td>{tenant.emergencyContactName ? `${tenant.emergencyContactName} · ${tenant.emergencyContactPhone ?? "—"}` : "—"}</td><td>{new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeZone: "Asia/Makassar" }).format(tenant.createdAt)}</td></tr>)}</tbody></table></div>}
+      {list.length === 0 ? <EmptyState title="Belum ada penghuni" description="Tambahkan penghuni sebelum membuat kontrak sewa." /> : <div className="table-wrap"><table className="data-table"><thead><tr><th>NAMA</th><th>TELEPON</th><th>EMAIL</th><th>KONTAK DARURAT</th><th>PORTAL</th><th>DITAMBAHKAN</th></tr></thead><tbody>{list.map((tenant) => <tr key={tenant.id}><td className="font-semibold">{tenant.fullName}</td><td>{tenant.phone}</td><td>{tenant.email ?? "—"}</td><td>{tenant.emergencyContactName ? `${tenant.emergencyContactName} · ${tenant.emergencyContactPhone ?? "—"}` : "—"}</td><td>{tenant.userId ? <span className="badge badge-green">Aktif</span> : tenant.email ? <TenantPortalInviteForm tenantId={tenant.id} /> : <span className="muted text-xs">Email belum diisi</span>}</td><td>{new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeZone: "Asia/Makassar" }).format(tenant.createdAt)}</td></tr>)}</tbody></table></div>}
     </section>
   </div>;
 }

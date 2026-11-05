@@ -14,7 +14,7 @@ async function hashToken(token: string) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-const roleName = (role: string) => role === "manager" ? "Pengelola" : role === "finance" ? "Keuangan" : "Staf";
+const roleName = (role: string) => role === "manager" ? "Pengelola" : role === "finance" ? "Keuangan" : role === "tenant" ? "Penghuni" : "Staf";
 
 export default async function InvitationPage({ searchParams }: { searchParams: Promise<{ token?: string }> }) {
   const params = await searchParams;

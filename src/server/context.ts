@@ -1,9 +1,9 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
-import { members, organizations } from "@/db/schema";
+import { members, organizations, tenants } from "@/db/schema";
 
 export type WorkspaceContext = {
   userId: string;
@@ -48,4 +48,14 @@ export async function requireWorkspace(allowedRoles?: readonly WorkspaceContext[
     userEmail: session.user.email,
     ...membership,
   } satisfies WorkspaceContext;
+}
+
+
+export async function requireTenantWorkspace() {
+  const ctx = await requireWorkspace(["tenant"]);
+  const [tenant] = await db.select().from(tenants).where(and(
+    eq(tenants.organizationId, ctx.organizationId), eq(tenants.userId, ctx.userId),
+  )).limit(1);
+  if (!tenant) redirect("/forbidden");
+  return { ...ctx, tenant };
 }

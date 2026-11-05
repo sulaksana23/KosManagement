@@ -10,7 +10,7 @@ import {
   MAX_PASSWORD_LENGTH,
   MIN_PASSWORD_LENGTH,
 } from "@/lib/password";
-import { acceptInvitation } from "@/server/actions";
+import { acceptInvitation, getAuthenticatedLandingPath } from "@/server/actions";
 
 const strengthToneClasses = {
   neutral: { bar: "bg-[#71817b]", text: "text-[#71817b]" },
@@ -104,15 +104,18 @@ export function AuthForm({ mode, invitationToken }: { mode: "login" | "register"
         return;
       }
 
+      let acceptedRole: string | undefined;
       if (invitationToken) {
         const acceptance = await acceptInvitation(invitationToken);
         if (!acceptance.ok) {
           setError(acceptance.message);
           return;
         }
+        acceptedRole = acceptance.role;
       }
 
-      router.replace(invitationToken || !isRegister ? "/dashboard" : "/setup");
+      const destination = invitationToken ? (acceptedRole === "tenant" ? "/tenant" : "/dashboard") : !isRegister ? await getAuthenticatedLandingPath() : "/setup";
+      router.replace(destination);
       router.refresh();
     } catch {
       setError("Server belum siap. Pastikan database sudah berjalan dan migrasi sudah diterapkan.");
