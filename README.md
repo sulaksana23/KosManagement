@@ -15,6 +15,7 @@ Gambar di atas adalah mockup visual. Aplikasi berjalan menggunakan data yang ter
 - Paket Free (1 properti, 10 kamar, 3 anggota) dan Pro tanpa batas dengan pemeriksaan kuota di server.
 - Permintaan upgrade Pro dan persetujuan admin manual dengan audit log.
 - Isolasi query berdasarkan workspace dari sesi server.
+- Permohonan sewa calon penghuni, keputusan pengelola, serta pembuatan profil dan kontrak secara atomik.
 - Pencatatan properti, kamar, dan penghuni; status kamar bisa diperbarui.
 - Kontrak dengan validasi server dan penguncian kamar untuk mencegah tanggal aktif bertumpuk.
 - Tagihan bulanan idempoten per kontrak dan periode.

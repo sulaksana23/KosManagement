@@ -20,6 +20,7 @@ import {
   properties,
   rooms,
   tenants,
+  tenantApplications,
   utilityReadings,
   payments,
   planRequests,
@@ -28,6 +29,7 @@ import { getServerSession, requireTenantWorkspace, requireUser, requireWorkspace
 import { id, monthRange, todayISO } from "@/lib/format";
 import { PLAN_LIMITS } from "@/lib/plans";
 import { applyInvoicePayment, calculateDepositSettlement, calculateUtilityAmount } from "@/lib/domain";
+import { hasLeaseConflictAtMoveIn } from "@/lib/rental-applications";
 import { requirePlatformAdmin } from "@/server/platform-admin";
 
 const requiredText = (max: number) => z.string().trim().min(1).max(max);
@@ -335,6 +337,219 @@ export async function createTenant(form: FormData) {
   });
   revalidatePath("/tenants");
   go("/tenants", "notice", "Penghuni berhasil ditambahkan.");
+}
+
+export async function createRentalApplication(form: FormData) {
+  const ctx = await requireWorkspace(["owner", "manager"]);
+  const parsed = z.object({
+    fullName: requiredText(120),
+    phone: requiredText(30),
+    email: z.union([z.literal(""), z.email()]).default(""),
+    emergencyContactName: z.string().max(120),
+    emergencyContactPhone: z.string().max(30),
+    roomId: requiredText(80),
+    desiredMoveIn: z.iso.date(),
+    note: z.string().trim().max(500),
+  }).safeParse({
+    fullName: value(form, "fullName"),
+    phone: value(form, "phone"),
+    email: value(form, "email").toLowerCase(),
+    emergencyContactName: value(form, "emergencyContactName"),
+    emergencyContactPhone: value(form, "emergencyContactPhone"),
+    roomId: value(form, "roomId"),
+    desiredMoveIn: value(form, "desiredMoveIn"),
+    note: value(form, "note"),
+  });
+  if (!parsed.success) go("/applications", "error", "Lengkapi nama, telepon, kamar, dan tanggal masuk; periksa format email.");
+
+  const applicationId = id();
+  try {
+    await db.transaction(async (tx) => {
+      const [room] = await tx.select({ id: rooms.id, status: rooms.status }).from(rooms).where(and(
+        eq(rooms.id, parsed.data.roomId),
+        eq(rooms.organizationId, ctx.organizationId),
+      )).for("update").limit(1);
+      if (!room) throw new Error("APPLICATION_ROOM_MISSING");
+      if (room.status === "maintenance" || room.status === "inactive") throw new Error("APPLICATION_ROOM_UNAVAILABLE");
+
+      const activeLeases = await tx.select({ endsAt: leases.endsAt }).from(leases).where(and(
+        eq(leases.roomId, room.id),
+        eq(leases.organizationId, ctx.organizationId),
+        eq(leases.status, "active"),
+      ));
+      if (hasLeaseConflictAtMoveIn(parsed.data.desiredMoveIn, activeLeases.map((lease) => lease.endsAt))) {
+        throw new Error("APPLICATION_ROOM_CONFLICT");
+      }
+
+      await tx.insert(tenantApplications).values({
+        id: applicationId,
+        organizationId: ctx.organizationId,
+        roomId: room.id,
+        fullName: parsed.data.fullName,
+        phone: parsed.data.phone,
+        email: parsed.data.email || null,
+        emergencyContactName: parsed.data.emergencyContactName || null,
+        emergencyContactPhone: parsed.data.emergencyContactPhone || null,
+        desiredMoveIn: parsed.data.desiredMoveIn,
+        note: parsed.data.note || null,
+        createdBy: ctx.userId,
+      });
+      await audit(tx, ctx.organizationId, ctx.userId, "rental_application.created", "tenant_application", applicationId);
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "APPLICATION_ROOM_MISSING") go("/applications", "error", "Kamar tidak ditemukan di workspace ini.");
+    if (error instanceof Error && error.message === "APPLICATION_ROOM_UNAVAILABLE") go("/applications", "error", "Kamar sedang dalam perawatan atau nonaktif.");
+    if (error instanceof Error && error.message === "APPLICATION_ROOM_CONFLICT") go("/applications", "error", "Kamar sudah memiliki kontrak yang mencakup tanggal masuk tersebut.");
+    go("/applications", "error", "Permohonan gagal disimpan. Coba lagi.");
+  }
+
+  revalidatePath("/applications");
+  go("/applications", "notice", "Permohonan calon penghuni berhasil dicatat.");
+}
+
+export async function approveRentalApplication(form: FormData) {
+  const ctx = await requireWorkspace(["owner", "manager"]);
+  const applicationId = requiredText(80).safeParse(value(form, "applicationId"));
+  if (!applicationId.success) go("/applications", "error", "Permohonan tidak valid.");
+
+  try {
+    await db.transaction(async (tx) => {
+      const [application] = await tx.select().from(tenantApplications).where(and(
+        eq(tenantApplications.id, applicationId.data),
+        eq(tenantApplications.organizationId, ctx.organizationId),
+      )).for("update").limit(1);
+      if (!application || application.status !== "pending") throw new Error("APPLICATION_NOT_PENDING");
+
+      const [room] = await tx.select({
+        id: rooms.id,
+        status: rooms.status,
+        monthlyRent: rooms.monthlyRent,
+        deposit: rooms.deposit,
+      }).from(rooms).where(and(
+        eq(rooms.id, application.roomId),
+        eq(rooms.organizationId, ctx.organizationId),
+      )).for("update").limit(1);
+      if (!room) throw new Error("APPLICATION_ROOM_MISSING");
+      if (room.status === "maintenance" || room.status === "inactive") throw new Error("APPLICATION_ROOM_UNAVAILABLE");
+
+      const activeLeases = await tx.select({ endsAt: leases.endsAt }).from(leases).where(and(
+        eq(leases.roomId, room.id),
+        eq(leases.organizationId, ctx.organizationId),
+        eq(leases.status, "active"),
+      ));
+      if (hasLeaseConflictAtMoveIn(application.desiredMoveIn, activeLeases.map((lease) => lease.endsAt))) {
+        throw new Error("APPLICATION_ROOM_CONFLICT");
+      }
+
+      const tenantId = id();
+      const leaseId = id();
+      await tx.insert(tenants).values({
+        id: tenantId,
+        organizationId: ctx.organizationId,
+        fullName: application.fullName,
+        phone: application.phone,
+        email: application.email,
+        emergencyContactName: application.emergencyContactName,
+        emergencyContactPhone: application.emergencyContactPhone,
+      });
+      await tx.insert(leases).values({
+        id: leaseId,
+        organizationId: ctx.organizationId,
+        tenantId,
+        roomId: room.id,
+        startsAt: application.desiredMoveIn,
+        endsAt: null,
+        monthlyRent: room.monthlyRent,
+        deposit: room.deposit,
+        dueDay: 1,
+        status: "active",
+      });
+
+      const roomStatus = application.desiredMoveIn <= todayISO() ? "occupied" : "reserved";
+      await tx.update(rooms).set({ status: roomStatus, updatedAt: new Date() }).where(and(
+        eq(rooms.id, room.id),
+        eq(rooms.organizationId, ctx.organizationId),
+      ));
+      await tx.update(tenantApplications).set({
+        status: "approved",
+        tenantId,
+        reviewedBy: ctx.userId,
+        reviewedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(and(
+        eq(tenantApplications.id, application.id),
+        eq(tenantApplications.organizationId, ctx.organizationId),
+      ));
+
+      await audit(tx, ctx.organizationId, ctx.userId, "tenant.created", "tenant", tenantId, { applicationId: application.id });
+      await audit(tx, ctx.organizationId, ctx.userId, "lease.created", "lease", leaseId, {
+        tenantId,
+        roomId: room.id,
+        applicationId: application.id,
+      });
+      await audit(tx, ctx.organizationId, ctx.userId, "rental_application.approved", "tenant_application", application.id, {
+        tenantId,
+        leaseId,
+        roomId: room.id,
+      });
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "APPLICATION_NOT_PENDING") go("/applications", "error", "Permohonan ini sudah ditinjau.");
+    if (error instanceof Error && error.message === "APPLICATION_ROOM_MISSING") go("/applications", "error", "Kamar permohonan tidak lagi tersedia.");
+    if (error instanceof Error && error.message === "APPLICATION_ROOM_UNAVAILABLE") go("/applications", "error", "Kamar sedang dalam perawatan atau nonaktif.");
+    if (error instanceof Error && error.message === "APPLICATION_ROOM_CONFLICT") go("/applications", "error", "Tanggal masuk bertabrakan dengan kontrak aktif. Periksa kontrak kamar terlebih dahulu.");
+    go("/applications", "error", "Persetujuan gagal disimpan. Coba lagi.");
+  }
+
+  revalidatePath("/applications");
+  revalidatePath("/tenants");
+  revalidatePath("/leases");
+  revalidatePath("/rooms");
+  revalidatePath("/dashboard");
+  go("/applications", "notice", "Permohonan disetujui; data penghuni dan kontrak sudah dibuat.");
+}
+
+export async function rejectRentalApplication(form: FormData) {
+  const ctx = await requireWorkspace(["owner", "manager"]);
+  const parsed = z.object({
+    applicationId: requiredText(80),
+    reviewNote: requiredText(500),
+  }).safeParse({
+    applicationId: value(form, "applicationId"),
+    reviewNote: value(form, "reviewNote"),
+  });
+  if (!parsed.success) go("/applications", "error", "Isi alasan penolakan.");
+
+  try {
+    await db.transaction(async (tx) => {
+      const [application] = await tx.select({ id: tenantApplications.id, status: tenantApplications.status })
+        .from(tenantApplications).where(and(
+          eq(tenantApplications.id, parsed.data.applicationId),
+          eq(tenantApplications.organizationId, ctx.organizationId),
+        )).for("update").limit(1);
+      if (!application || application.status !== "pending") throw new Error("APPLICATION_NOT_PENDING");
+
+      await tx.update(tenantApplications).set({
+        status: "rejected",
+        reviewNote: parsed.data.reviewNote,
+        reviewedBy: ctx.userId,
+        reviewedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(and(
+        eq(tenantApplications.id, application.id),
+        eq(tenantApplications.organizationId, ctx.organizationId),
+      ));
+      await audit(tx, ctx.organizationId, ctx.userId, "rental_application.rejected", "tenant_application", application.id, {
+        reason: parsed.data.reviewNote,
+      });
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "APPLICATION_NOT_PENDING") go("/applications", "error", "Permohonan ini sudah ditinjau.");
+    go("/applications", "error", "Penolakan gagal disimpan. Coba lagi.");
+  }
+
+  revalidatePath("/applications");
+  go("/applications", "notice", "Permohonan ditolak dan alasannya tersimpan.");
 }
 
 export async function createLease(form: FormData) {

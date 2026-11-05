@@ -65,6 +65,7 @@ export const authVerifications = pgTable("verification", {
 export const memberRole = pgEnum("member_role", ["owner", "manager", "finance", "staff", "tenant"]);
 export const organizationPlan = pgEnum("organization_plan", ["free", "pro"]);
 export const planRequestStatus = pgEnum("plan_request_status", ["pending", "approved", "rejected"]);
+export const tenantApplicationStatus = pgEnum("tenant_application_status", ["pending", "approved", "rejected"]);
 export const roomStatus = pgEnum("room_status", ["available", "reserved", "occupied", "maintenance", "inactive"]);
 export const leaseStatus = pgEnum("lease_status", ["draft", "active", "ended", "cancelled"]);
 export const invoiceStatus = pgEnum("invoice_status", ["unpaid", "partial", "paid", "overdue", "cancelled"]);
@@ -140,6 +141,30 @@ export const tenants = pgTable("tenant", {
 }, (table) => [
   index("tenant_organization_name_idx").on(table.organizationId, table.fullName),
   index("tenant_user_idx").on(table.userId),
+]);
+
+export const tenantApplications = pgTable("tenant_application", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  roomId: text("room_id").notNull().references(() => rooms.id, { onDelete: "restrict" }),
+  fullName: text("full_name").notNull(),
+  email: text("email"),
+  phone: text("phone").notNull(),
+  emergencyContactName: text("emergency_contact_name"),
+  emergencyContactPhone: text("emergency_contact_phone"),
+  desiredMoveIn: date("desired_move_in").notNull(),
+  note: text("note"),
+  status: tenantApplicationStatus("status").notNull().default("pending"),
+  tenantId: text("tenant_id").references(() => tenants.id, { onDelete: "set null" }),
+  reviewNote: text("review_note"),
+  reviewedBy: text("reviewed_by").references(() => authUsers.id, { onDelete: "set null" }),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  createdBy: text("created_by").notNull().references(() => authUsers.id, { onDelete: "restrict" }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (table) => [
+  index("tenant_application_org_status_created_idx").on(table.organizationId, table.status, table.createdAt),
+  index("tenant_application_room_status_movein_idx").on(table.roomId, table.status, table.desiredMoveIn),
 ]);
 
 export const leases = pgTable("lease", {

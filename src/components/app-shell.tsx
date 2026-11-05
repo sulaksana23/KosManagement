@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import {
-  Building2, CreditCard, FileText, LayoutDashboard, LogOut, ClipboardList,
+  Building2, CreditCard, FileText, LayoutDashboard, LogOut, ClipboardList, UserPlus,
   Menu, Receipt, Settings, Users, Wallet, Wrench, X, Home, Crown,
 } from "lucide-react";
 import { authClient } from "@/lib/auth-client";
@@ -14,6 +14,7 @@ const navigation = [
   { label: "Properti", href: "/properties", icon: Building2, roles: ["owner", "manager"] },
   { label: "Kamar", href: "/rooms", icon: Home, roles: ["owner", "manager", "staff"] },
   { label: "Penghuni", href: "/tenants", icon: Users, roles: ["owner", "manager"] },
+  { label: "Permohonan", href: "/applications", icon: UserPlus, roles: ["owner", "manager"] },
   { label: "Kontrak", href: "/leases", icon: FileText, roles: ["owner", "manager"] },
   { label: "Tagihan & bayar", href: "/billing", icon: CreditCard, roles: ["owner", "manager", "finance"] },
   { label: "Meter utilitas", href: "/utilities", icon: Receipt, roles: ["owner", "manager", "finance"] },
