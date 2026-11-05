@@ -57,6 +57,7 @@ Kemudian install dependency, terapkan migration, dan jalankan aplikasi:
 ```bash
 npm ci
 npm run db:migrate
+npm run test
 npm run dev
 ```
 
@@ -108,3 +109,7 @@ Jangan menaruh secret, password demo nyata, data penghuni, atau dokumen pribadi 
 - [Arsitektur](docs/ARCHITECTURE.md)
 - [Prompt implementasi](docs/IMPLEMENTATION-PROMPT.md)
 - [Aturan agent](AGENTS.md)
+
+## Pemeriksaan otomatis
+
+Jalankan `npm run lint`, `npm run typecheck`, dan `npm test` sebelum mengirim perubahan. GitHub Actions menjalankan ketiganya pada push ke `main` dan pull request. Tes unit mencakup hitung meter dan rupiah, saldo pembayaran, penyelesaian deposit, serta aturan kekuatan password. Alur database yang memerlukan akun dan data terpisah tetap perlu diperiksa pada lingkungan uji.

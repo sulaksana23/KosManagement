@@ -27,6 +27,7 @@ import {
 import { getServerSession, requireTenantWorkspace, requireUser, requireWorkspace } from "@/server/context";
 import { id, monthRange, todayISO } from "@/lib/format";
 import { PLAN_LIMITS } from "@/lib/plans";
+import { applyInvoicePayment, calculateDepositSettlement, calculateUtilityAmount } from "@/lib/domain";
 import { requirePlatformAdmin } from "@/server/platform-admin";
 
 const requiredText = (max: number) => z.string().trim().min(1).max(max);
@@ -532,7 +533,6 @@ export async function endLease(form: FormData) {
 
       const cancelledBeforeStart = lease.startsAt > today;
       const refund = BigInt(parsed.data.depositRefunded || "0");
-      const deposit = BigInt(lease.deposit);
       let finalEndDate = lease.endsAt;
       let finalStatus: "cancelled" | "ended" = "cancelled";
       let checkoutChanges: Record<string, unknown> = { startsAt: lease.startsAt, cancelledBeforeStart: true };
@@ -540,8 +540,9 @@ export async function endLease(form: FormData) {
       if (!cancelledBeforeStart) {
         const checkoutDate = parsed.data.checkoutDate || today;
         if (checkoutDate < lease.startsAt || checkoutDate > today) throw new Error("CHECKOUT_DATE_INVALID");
-        if (refund > deposit) throw new Error("DEPOSIT_REFUND_TOO_HIGH");
-        const withheld = deposit - refund;
+        const settlement = calculateDepositSettlement(lease.deposit, parsed.data.depositRefunded || "0");
+        if (!settlement) throw new Error("DEPOSIT_REFUND_TOO_HIGH");
+        const withheld = BigInt(settlement.withheld);
         if (withheld > BigInt(0) && !parsed.data.checkoutNote) throw new Error("DEPOSIT_NOTE_REQUIRED");
 
         const overlap = await tx.select({ id: leases.id }).from(leases).where(and(
@@ -633,7 +634,7 @@ export async function generateMonthlyInvoices(form: FormData) {
       const dueAt = `${range.year}-${String(range.month).padStart(2, "0")}-${String(dueDay).padStart(2, "0")}`;
       const utilityItems = await tx.select({ type: utilityReadings.meterType, amount: utilityReadings.amount }).from(utilityReadings).where(and(
         eq(utilityReadings.organizationId, ctx.organizationId), eq(utilityReadings.roomId, lease.roomId), eq(utilityReadings.periodStart, range.start),
-      ));
+      )).for("share");
       const utilityTotal = utilityItems.reduce((sum, item) => sum + BigInt(item.amount), BigInt(0));
       const invoiceAmount = (BigInt(lease.rent) + utilityTotal).toString();
       const invoiceId = id();
@@ -661,7 +662,7 @@ export async function generateMonthlyInvoices(form: FormData) {
 
 export async function createPayment(form: FormData) {
   const ctx = await requireWorkspace(["owner", "manager", "finance"]);
-  const parsed = z.object({ invoiceId: requiredText(80), amount: money, method: requiredText(40), reference: z.string().max(120) }).safeParse({
+  const parsed = z.object({ invoiceId: requiredText(80), amount: money, method: z.enum(["transfer", "cash", "qris"]), reference: z.string().max(120) }).safeParse({
     invoiceId: value(form, "invoiceId"), amount: value(form, "amount"), method: value(form, "method") || "transfer", reference: value(form, "reference"),
   });
   if (!parsed.success) go("/billing", "error", "Pilih tagihan dan isi nominal pembayaran dengan benar.");
@@ -669,11 +670,10 @@ export async function createPayment(form: FormData) {
     await db.transaction(async (tx) => {
       const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, parsed.data.invoiceId), eq(invoices.organizationId, ctx.organizationId))).for("update").limit(1);
       if (!invoice || invoice.status === "cancelled") throw new Error("INVOICE_INVALID");
-      const amount = BigInt(parsed.data.amount);
-      const balance = BigInt(invoice.amount) - BigInt(invoice.paidAmount);
-      if (amount <= BigInt(0) || amount > balance) throw new Error("AMOUNT_INVALID");
-      const paidAmount = BigInt(invoice.paidAmount) + amount;
-      const status = paidAmount === BigInt(invoice.amount) ? "paid" : "partial";
+      const settlement = applyInvoicePayment(invoice.amount, invoice.paidAmount, parsed.data.amount);
+      if (!settlement) throw new Error("AMOUNT_INVALID");
+      const paidAmount = settlement.paidAmount;
+      const status = settlement.status;
       const paymentId = id();
       await tx.insert(payments).values({
         id: paymentId, organizationId: ctx.organizationId, invoiceId: invoice.id,
@@ -713,24 +713,19 @@ export async function createExpense(form: FormData) {
   go("/expenses", "notice", "Biaya berhasil dicatat.");
 }
 
-function meterMilli(raw: string) {
-  const match = /^(\d{1,11})(?:\.(\d{1,3}))?$/.exec(raw);
-  if (!match) return null;
-  return BigInt(match[1]) * BigInt(1000) + BigInt((match[2] ?? "").padEnd(3, "0") || "0");
-}
-
 export async function createUtilityReading(form: FormData) {
   const ctx = await requireWorkspace(["owner", "manager", "finance"]);
   const roomId = value(form, "roomId"), periodInput = value(form, "periodStart"), meterType = value(form, "meterType");
   const startRaw = value(form, "startValue"), endRaw = value(form, "endValue"), rateRaw = value(form, "rate");
-  const start = meterMilli(startRaw), end = meterMilli(endRaw);
   const periodRange = monthRange(periodInput);
-  const valid = requiredText(80).safeParse(roomId).success && periodRange !== null && requiredText(30).safeParse(meterType).success && start !== null && end !== null && end >= start && money.safeParse(rateRaw).success;
-  if (!valid || start === null || end === null || !periodRange) go("/utilities", "error", "Periksa kamar, periode, angka meter, dan tarif.");
+  const amount = calculateUtilityAmount(startRaw, endRaw, rateRaw);
+  const valid = requiredText(80).safeParse(roomId).success && periodRange !== null
+    && z.enum(["electricity", "water"]).safeParse(meterType).success && money.safeParse(rateRaw).success
+    && amount !== null;
+  if (!valid || amount === null || !periodRange) go("/utilities", "error", "Periksa kamar, periode, jenis meter, angka, dan tarif.");
   const period = periodRange.start;
   const [room] = await db.select({ id: rooms.id }).from(rooms).where(and(eq(rooms.id, roomId), eq(rooms.organizationId, ctx.organizationId))).limit(1);
   if (!room) go("/utilities", "error", "Kamar tidak ditemukan.");
-  const amount = ((end - start) * BigInt(rateRaw) + BigInt(999)) / BigInt(1000);
   const readingId = id();
   try {
     await db.transaction(async (tx) => {
@@ -745,6 +740,73 @@ export async function createUtilityReading(form: FormData) {
   }
   revalidatePath("/utilities");
   go("/utilities", "notice", `Meter dicatat. Total pemakaian: ${amount.toString()} rupiah.`);
+}
+
+
+export async function correctUtilityReading(form: FormData) {
+  const ctx = await requireWorkspace(["owner", "manager", "finance"]);
+  const parsedId = requiredText(80).safeParse(value(form, "readingId"));
+  if (!parsedId.success) go("/utilities", "error", "Data meter tidak valid.");
+  const fieldSuffix = parsedId.data;
+  const parsed = z.object({
+    readingId: requiredText(80),
+    startValue: z.string().regex(/^\d{1,11}(?:\.\d{1,3})?$/),
+    endValue: z.string().regex(/^\d{1,11}(?:\.\d{1,3})?$/),
+    rate: money,
+    reason: requiredText(500),
+  }).safeParse({
+    readingId: parsedId.data,
+    startValue: value(form, `startValue-${fieldSuffix}`),
+    endValue: value(form, `endValue-${fieldSuffix}`),
+    rate: value(form, `rate-${fieldSuffix}`),
+    reason: value(form, `reason-${fieldSuffix}`),
+  });
+  if (!parsed.success) go("/utilities", "error", "Lengkapi angka meter, tarif, dan alasan koreksi.");
+
+  const amount = calculateUtilityAmount(parsed.data.startValue, parsed.data.endValue, parsed.data.rate);
+  if (amount === null) go("/utilities", "error", "Angka akhir tidak boleh lebih kecil dari angka awal dan total harus valid.");
+
+  try {
+    await db.transaction(async (tx) => {
+      const [reading] = await tx.select().from(utilityReadings).where(and(
+        eq(utilityReadings.id, parsed.data.readingId),
+        eq(utilityReadings.organizationId, ctx.organizationId),
+      )).for("update").limit(1);
+      if (!reading) throw new Error("UTILITY_READING_MISSING");
+
+      const [invoice] = await tx.select({ id: invoices.id }).from(invoices).innerJoin(leases, eq(invoices.leaseId, leases.id)).where(and(
+        eq(invoices.organizationId, ctx.organizationId),
+        eq(leases.organizationId, ctx.organizationId),
+        eq(leases.roomId, reading.roomId),
+        eq(invoices.periodStart, reading.periodStart),
+      )).limit(1);
+      if (invoice) throw new Error("UTILITY_ALREADY_INVOICED");
+
+      await tx.update(utilityReadings).set({
+        startValue: parsed.data.startValue,
+        endValue: parsed.data.endValue,
+        rate: parsed.data.rate,
+        amount: amount.toString(),
+        correctionReason: parsed.data.reason,
+      }).where(and(
+        eq(utilityReadings.id, reading.id),
+        eq(utilityReadings.organizationId, ctx.organizationId),
+      ));
+      await audit(tx, ctx.organizationId, ctx.userId, "utility_reading.corrected", "utility_reading", reading.id, {
+        before: { startValue: reading.startValue, endValue: reading.endValue, rate: reading.rate, amount: reading.amount, correctionReason: reading.correctionReason },
+        after: { startValue: parsed.data.startValue, endValue: parsed.data.endValue, rate: parsed.data.rate, amount: amount.toString(), correctionReason: parsed.data.reason },
+      });
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "UTILITY_READING_MISSING") go("/utilities", "error", "Data meter tidak ditemukan.");
+    if (error instanceof Error && error.message === "UTILITY_ALREADY_INVOICED") go("/utilities", "error", "Meter tidak bisa dikoreksi karena tagihan periode ini sudah dibuat.");
+    go("/utilities", "error", "Koreksi meter gagal disimpan. Coba lagi.");
+  }
+
+  revalidatePath("/utilities");
+  revalidatePath("/billing");
+  revalidatePath("/dashboard");
+  go("/utilities", "notice", "Koreksi meter tersimpan dan tercatat di audit log.");
 }
 
 export async function createMaintenanceTicket(form: FormData) {
@@ -1079,15 +1141,14 @@ export async function reviewTenantPayment(form: FormData) {
       if (!invoice || invoice.status === "cancelled") throw new Error("INVOICE_INVALID");
 
       if (parsed.data.decision === "verify") {
-        const remaining = BigInt(invoice.amount) - BigInt(invoice.paidAmount);
-        const amount = BigInt(payment.amount);
-        if (amount <= BigInt(0) || amount > remaining) throw new Error("PAYMENT_AMOUNT_EXCEEDS_BALANCE");
-        const paidAmount = BigInt(invoice.paidAmount) + amount;
+        const settlement = applyInvoicePayment(invoice.amount, invoice.paidAmount, payment.amount);
+        if (!settlement) throw new Error("PAYMENT_AMOUNT_EXCEEDS_BALANCE");
+        const paidAmount = settlement.paidAmount;
         await tx.update(payments).set({ status: "verified", verifiedBy: ctx.userId })
           .where(eq(payments.id, payment.id));
         await tx.update(invoices).set({
           paidAmount: paidAmount.toString(),
-          status: paidAmount === BigInt(invoice.amount) ? "paid" : "partial",
+          status: settlement.status,
           updatedAt: new Date(),
         }).where(eq(invoices.id, invoice.id));
         await audit(tx, ctx.organizationId, ctx.userId, "payment.tenant_declaration_verified", "payment", payment.id, {
