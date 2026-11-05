@@ -20,6 +20,7 @@ Gambar di atas adalah mockup visual. Aplikasi berjalan menggunakan data yang ter
 - Tagihan bulanan idempoten per kontrak dan periode.
 - Pencatatan dan verifikasi pembayaran manual dengan pembaruan saldo invoice dalam transaksi.
 - Catatan meter utilitas, biaya operasional, dan tiket perawatan dengan riwayat audit.
+- Riwayat aktivitas workspace untuk menelusuri perubahan penting secara terurut dan terpaginasikan.
 - Dashboard dan laporan pemasukan, biaya, tunggakan, serta okupansi dari database.
 - Ekspor CSV untuk pemasukan, biaya, dan status kamar.
 - Migration PostgreSQL tersimpan di `drizzle/`.
