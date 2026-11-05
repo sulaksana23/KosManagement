@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, or } from "drizzle-orm";
+import { and, count, desc, eq, ilike, inArray, or } from "drizzle-orm";
 import { FileText, Plus } from "lucide-react";
 import { db } from "@/db";
 import { auditLogs, leases, properties, rooms, tenants } from "@/db/schema";
@@ -7,23 +7,35 @@ import { createLease, endLease, renewLease } from "@/server/actions";
 import { requireWorkspace } from "@/server/context";
 import { formatDate, formatIDR, todayISO } from "@/lib/format";
 import { ConfirmSubmitButton } from "@/components/confirm-submit-button";
+import { ListPagination } from "@/components/list-pagination";
+import { DEFAULT_PAGE_SIZE, escapeLike, getPageCount, getPageOffset, normalizeSearch, parsePage } from "@/lib/pagination";
 
-export default async function LeasesPage({ searchParams }: { searchParams: Promise<{ notice?: string; error?: string }> }) {
+export default async function LeasesPage({ searchParams }: { searchParams: Promise<{ notice?: string; error?: string; q?: string; status?: string; page?: string }> }) {
   const ctx = await requireWorkspace(["owner", "manager"]);
   const params = await searchParams;
   const today = todayISO();
   const expiryHorizon = addDaysISO(today, 30);
-  const [tenantList, roomList, leaseList, auditRows] = await Promise.all([
+  const q = normalizeSearch(params.q), page = parsePage(params.page);
+  const statusValues = ["draft", "active", "ended", "cancelled"];
+  const status = statusValues.includes(params.status ?? "") ? params.status! : "";
+  const conditions = [eq(leases.organizationId, ctx.organizationId), eq(tenants.organizationId, ctx.organizationId), eq(rooms.organizationId, ctx.organizationId), eq(properties.organizationId, ctx.organizationId)];
+  if (status) conditions.push(eq(leases.status, status as typeof leases.$inferSelect.status));
+  if (q) conditions.push(or(ilike(tenants.fullName, `%${escapeLike(q)}%`), ilike(rooms.code, `%${escapeLike(q)}%`), ilike(properties.name, `%${escapeLike(q)}%`))!);
+  const where = and(...conditions);
+  const [tenantList, roomList, leaseList, auditRows, countRows] = await Promise.all([
     db.select({ id: tenants.id, name: tenants.fullName }).from(tenants).where(eq(tenants.organizationId, ctx.organizationId)).orderBy(tenants.fullName),
     db.select({ id: rooms.id, code: rooms.code, rent: rooms.monthlyRent, property: properties.name }).from(rooms).innerJoin(properties, eq(rooms.propertyId, properties.id)).where(and(eq(rooms.organizationId, ctx.organizationId), eq(properties.organizationId, ctx.organizationId), or(eq(rooms.status, "available"), eq(rooms.status, "reserved")))).orderBy(properties.name, rooms.code),
     db.select({ lease: leases, tenantName: tenants.fullName, roomCode: rooms.code, propertyName: properties.name }).from(leases)
       .innerJoin(tenants, eq(leases.tenantId, tenants.id)).innerJoin(rooms, eq(leases.roomId, rooms.id)).innerJoin(properties, eq(rooms.propertyId, properties.id))
-      .where(and(eq(leases.organizationId, ctx.organizationId), eq(tenants.organizationId, ctx.organizationId), eq(rooms.organizationId, ctx.organizationId), eq(properties.organizationId, ctx.organizationId))).orderBy(leases.startsAt).limit(100),
+      .where(where).orderBy(leases.startsAt).limit(DEFAULT_PAGE_SIZE).offset(getPageOffset(page)),
     db.select({ action: auditLogs.action, entityId: auditLogs.entityId, changes: auditLogs.changes }).from(auditLogs).where(and(
       eq(auditLogs.organizationId, ctx.organizationId),
       inArray(auditLogs.action, ["lease.renewed", "lease.ended", "lease.renewal_cancelled"]),
     )).orderBy(desc(auditLogs.createdAt)).limit(500),
+    db.select({ total: count() }).from(leases).innerJoin(tenants, eq(leases.tenantId, tenants.id)).innerJoin(rooms, eq(leases.roomId, rooms.id)).innerJoin(properties, eq(rooms.propertyId, properties.id)).where(where),
   ]);
+  const pageCount = getPageCount(Number(countRows[0]?.total ?? 0));
+  const currentPage = Math.min(page, pageCount);
   const renewedLeaseIds = new Set<string>();
   const cancelledRenewalIds = new Set<string>();
   const checkoutByLease = new Map<string, Record<string, unknown>>();
@@ -36,8 +48,9 @@ export default async function LeasesPage({ searchParams }: { searchParams: Promi
   }
   const expiringCount = leaseList.filter(({ lease }) => lease.status === "active" && lease.endsAt && lease.endsAt >= today && lease.endsAt <= expiryHorizon && !renewedLeaseIds.has(lease.id)).length;
   return <div className="page-stack">
-    <PageHeading title="Kontrak sewa" description="Kelola perpanjangan, tanggal keluar, dan penyelesaian kontrak penghuni." action={<div className="flex flex-wrap gap-2"><span className="badge badge-gray">{leaseList.length} kontrak</span>{expiringCount > 0 && <span className="badge badge-amber">{expiringCount} segera berakhir</span>}</div>} />
+    <PageHeading title="Kontrak sewa" description="Kelola perpanjangan, tanggal keluar, dan penyelesaian kontrak penghuni." action={<div className="flex flex-wrap gap-2"><span className="badge badge-gray">{countRows[0]?.total ?? 0} kontrak</span>{expiringCount > 0 && <span className="badge badge-amber">{expiringCount} segera berakhir di halaman ini</span>}</div>} />
     <PageNotice notice={params.notice} error={params.error} />
+    <form method="get" className="surface flex flex-wrap items-end gap-3 p-3"><label className="field min-w-[220px] flex-1"><span>Cari kontrak</span><input className="input" name="q" defaultValue={q} placeholder="Nama penghuni, kamar, properti" /></label><label className="field min-w-[150px]"><span>Status</span><select className="select" name="status" defaultValue={status}><option value="">Semua status</option>{statusValues.map((value) => <option key={value} value={value}>{value === "draft" ? "Draf" : value === "active" ? "Aktif" : value === "ended" ? "Berakhir" : "Dibatalkan"}</option>)}</select></label><button className="btn btn-secondary">Terapkan</button><a className="btn btn-quiet" href="/leases">Reset</a></form>
     <FormCard title="Buat kontrak" description="Sistem menolak tanggal yang bertumpuk pada kamar yang sama.">
       {tenantList.length === 0 || roomList.length === 0 ? <p className="muted m-0 text-sm">Tambahkan penghuni dan kamar tersedia terlebih dahulu.</p> : <form action={createLease} className="form-grid">
         <SelectField name="tenantId" label="Penghuni" options={tenantList.map((tenant) => ({ value: tenant.id, label: tenant.name }))} required />
@@ -52,7 +65,8 @@ export default async function LeasesPage({ searchParams }: { searchParams: Promi
     </FormCard>
     <section className="surface overflow-hidden">
       <div className="flex items-center gap-2 border-b border-[#e8eeeb] px-4 py-3"><FileText size={16} className="text-[#438363]" /><h2 className="surface-title m-0">Riwayat kontrak</h2></div>
-      {leaseList.length === 0 ? <EmptyState title="Belum ada kontrak" description="Kontrak aktif akan menentukan status huni kamar." /> : <div className="table-wrap"><table className="data-table"><thead><tr><th>PENGHUNI</th><th>KAMAR</th><th>PERIODE</th><th>SEWA / BULAN</th><th>JATUH TEMPO</th><th>STATUS</th><th>AKSI</th></tr></thead><tbody>{leaseList.map(({ lease, tenantName, roomCode, propertyName }) => <tr key={lease.id}><td className="font-semibold">{tenantName}</td><td>{propertyName} · {roomCode}</td><td>{formatDate(lease.startsAt)} – {lease.endsAt ? formatDate(lease.endsAt) : "Tanpa batas akhir"}</td><td>{formatIDR(lease.monthlyRent)}</td><td>Tanggal {lease.dueDay}</td><td><div className="grid justify-items-start gap-1"><StatusBadge status={lease.status} />{lease.status === "active" && lease.endsAt && lease.endsAt >= today && lease.endsAt <= expiryHorizon && <span className="text-[10px] font-medium text-[#755b28]">Berakhir dalam {Math.round((Date.parse(`${lease.endsAt}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000)} hari</span>}</div></td><td><LeaseActions lease={lease} today={today} renewed={renewedLeaseIds.has(lease.id)} checkout={checkoutByLease.get(lease.id) ?? null} /></td></tr>)}</tbody></table></div>}
+      {leaseList.length === 0 ? <EmptyState title={q || status ? "Kontrak tidak ditemukan" : "Belum ada kontrak"} description={q || status ? "Ubah pencarian atau filter." : "Kontrak aktif akan menentukan status huni kamar."} /> : <div className="table-wrap"><table className="data-table"><thead><tr><th>PENGHUNI</th><th>KAMAR</th><th>PERIODE</th><th>SEWA / BULAN</th><th>JATUH TEMPO</th><th>STATUS</th><th>AKSI</th></tr></thead><tbody>{leaseList.map(({ lease, tenantName, roomCode, propertyName }) => <tr key={lease.id}><td className="font-semibold">{tenantName}</td><td>{propertyName} · {roomCode}</td><td>{formatDate(lease.startsAt)} – {lease.endsAt ? formatDate(lease.endsAt) : "Tanpa batas akhir"}</td><td>{formatIDR(lease.monthlyRent)}</td><td>Tanggal {lease.dueDay}</td><td><div className="grid justify-items-start gap-1"><StatusBadge status={lease.status} />{lease.status === "active" && lease.endsAt && lease.endsAt >= today && lease.endsAt <= expiryHorizon && <span className="text-[10px] font-medium text-[#755b28]">Berakhir dalam {Math.round((Date.parse(`${lease.endsAt}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000)} hari</span>}</div></td><td><LeaseActions lease={lease} today={today} renewed={renewedLeaseIds.has(lease.id)} checkout={checkoutByLease.get(lease.id) ?? null} /></td></tr>)}</tbody></table></div>}
+      <ListPagination pathname="/leases" params={{ q: q || undefined, status: status || undefined }} page={currentPage} pageCount={pageCount} />
     </section>
   </div>;
 }

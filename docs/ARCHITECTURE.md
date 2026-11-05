@@ -28,15 +28,17 @@ Versi dasar yang dipasang saat bootstrap: Next.js `16.4.5`, React `19.3.1`, Bett
 
 ### Autentikasi
 
-Better Auth `1.7.17` dengan adapter Drizzle `1.7.17`; menggunakan email dan kata sandi serta tabel sesi di PostgreSQL. Route handler memakai integrasi Next.js. Pemeriksaan sesi, workspace, dan peran dilakukan kembali di halaman, server action, serta ekspor CSV. Pemilik membuat token undangan acak sekali pakai yang disimpan sebagai hash dan kedaluwarsa dalam 7 hari; tautan dibagikan secara pribadi karena email belum dikonfigurasi. Penerimaan memeriksa alamat email akun dan memastikan akun belum terikat ke workspace lain. Reset kata sandi melalui email menunggu konfigurasi provider email. Satu akun dibatasi pada satu workspace sampai pemilih workspace tersedia.
+Better Auth `1.7.17` dengan adapter Drizzle `1.7.17`; menggunakan email dan kata sandi serta tabel sesi di PostgreSQL. Route handler memakai integrasi Next.js. Pemeriksaan sesi, workspace, dan peran dilakukan kembali di halaman, server action, serta ekspor CSV. Pemilik membuat token undangan sekali pakai yang disimpan sebagai hash dan kedaluwarsa dalam 7 hari. Email reset kata sandi dan undangan dikirim melalui Resend REST API jika `RESEND_API_KEY` dan `EMAIL_FROM` tersedia. Token reset berlaku 30 menit; permintaan reset tetap memberi respons generik untuk mengurangi enumerasi akun. Satu akun dibatasi pada satu workspace sampai pemilih workspace tersedia.
 
 ### Penyimpanan file
 
-Upload dokumen/foto tidak aktif dan proyek tidak bergantung pada object storage. Penghuni melaporkan pembayaran memakai nominal dan nomor referensi; data masuk sebagai pembayaran pending dan harus diverifikasi oleh staf keuangan/pengelola. Bila lampiran diaktifkan nanti, pilih penyimpanan privat terlebih dahulu dan akseskan melalui route server yang memeriksa sesi serta kepemilikan. Ikon UI memakai SVG dari Lucide.
+Foto bukti bayar dan foto keluhan disimpan pada tabel `private_file` dalam kolom PostgreSQL `bytea`; object storage tidak digunakan. Ukuran maksimum 1.500.000 byte, MIME JPEG/PNG/WebP harus sesuai signature file, dan SVG unggahan ditolak. Route `/api/private-files/[fileId]` selalu memeriksa sesi, workspace, role, serta relasi pemilik tiket/pembayaran sebelum mengirim file dengan cache privat/nonaktif dan `nosniff`. Server Actions memakai batas body 2 MB agar multipart untuk gambar yang valid dapat diterima. Ikon UI memakai SVG dari Lucide.
+
+Penyimpanan bytea membuat deployment sederhana dan tidak menambah kredensial Blob, tetapi data gambar ikut menambah ukuran PostgreSQL serta backup. Pantau volume lampiran; pindah ke object storage privat hanya sebagai perubahan arsitektur tersendiri dengan kontrol akses yang sama.
 
 ### Pembayaran dan notifikasi
 
-Belum diaktifkan. Pembayaran manual anggota berizin mencatat verifikasi, mengunci invoice, dan memperbarui saldo dalam transaksi. Adapter gateway baru boleh dibuat setelah provider/kredensial tersedia; webhook perlu verifikasi signature dan idempotency. Redirect browser tidak menjadi bukti pembayaran berhasil.
+Pembayaran manual anggota berizin mencatat verifikasi, mengunci invoice, dan memperbarui saldo dalam transaksi. Pengingat email dijalankan melalui route `/api/cron/reminders`, dilindungi `CRON_SECRET`, dan dijadwalkan Vercel Cron setiap hari pukul 00:00 UTC. Preferensi hari pengingat per workspace dan log per invoice/tanggal disimpan di PostgreSQL; unique constraint mencegah pemrosesan ganda, kegagalan dapat dicoba lagi, dan pengiriman memakai idempotency key. Adapter gateway baru boleh dibuat setelah provider/kredensial tersedia; webhook perlu verifikasi signature dan idempotency. Redirect browser tidak menjadi bukti pembayaran berhasil.
 
 ## Migration saat deployment
 
@@ -48,8 +50,9 @@ Build Production Vercel menjalankan `scripts/migrate-production.mjs` sebelum `ne
 - `src/components`: shell navigasi dan komponen UI bersama.
 - `src/server/context.ts`: sesi tervalidasi dan konteks workspace/peran.
 - `src/server/actions.ts`: validasi Zod, authorization, transaksi domain, dan audit untuk mutasi.
+- `src/server/repositories`: query data yang membutuhkan pembatas workspace.
 - `src/db`: koneksi PostgreSQL dan schema Drizzle.
-- `src/lib`: format rupiah, tanggal, ID, dan rentang periode.
+- `src/lib`: format rupiah, tanggal, email, validasi file privat, pagination, dan aturan jadwal pengingat.
 - `drizzle`: migration SQL dan snapshot schema yang dihasilkan Drizzle Kit.
 
 Untuk MVP, sebagian query halaman dan mutasi masih dekat dengan route/server action. Saat fitur bertambah, pindahkan query berulang ke repository dan aturan domain ke service terpisah sebelum memperluas modul.
@@ -59,8 +62,9 @@ Untuk MVP, sebagian query halaman dan mutasi masih dekat dengan route/server act
 - Kebocoran lintas workspace melalui query yang tidak menyertakan scope organisasi.
 - Overlap kontrak dan tagihan ganda akibat race condition; gunakan constraint/transaksi/idempotency yang sesuai.
 - Ketidakcocokan timezone saat periode tagihan dan tanggal kontrak dihitung.
-- Lampiran bukti bayar belum tersedia; jangan menambah unggahan dokumen pribadi tanpa penyimpanan privat dan pemeriksaan kepemilikan.
+- Lampiran gambar disimpan di PostgreSQL; volume lampiran perlu dipantau karena memperbesar database dan backup.
 - Ringkasan dashboard tidak cocok dengan data transaksi jika query/definisi metrik tidak konsisten.
+- Email dan Vercel Cron memerlukan environment variable serta domain Resend yang dikonfigurasi oleh pemilik deployment.
 
 
 ## Paket Free dan Pro

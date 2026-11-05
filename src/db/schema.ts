@@ -1,5 +1,7 @@
 import {
   boolean,
+  check,
+  customType,
   date,
   index,
   integer,
@@ -11,6 +13,7 @@ import {
   timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
 const updatedAt = () => timestamp("updated_at", { withTimezone: true }).notNull().defaultNow();
@@ -79,6 +82,9 @@ export const organizations = pgTable("organization", {
   timezone: text("timezone").notNull().default("Asia/Makassar"),
   currency: text("currency").notNull().default("IDR"),
   plan: organizationPlan("plan").notNull().default("free"),
+  remindersEnabled: boolean("reminders_enabled").notNull().default(true),
+  reminderDaysBefore: integer("reminder_days_before").array().notNull().default([3]),
+  reminderDaysAfter: integer("reminder_days_after").array().notNull().default([1, 7]),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -326,6 +332,45 @@ export const planRequests = pgTable("plan_request", {
 }, (table) => [
   index("plan_request_organization_status_created_idx").on(table.organizationId, table.status, table.createdAt),
   index("plan_request_requester_idx").on(table.requestedBy),
+]);
+
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" });
+
+export const privateFiles = pgTable("private_file", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  paymentId: text("payment_id").references(() => payments.id, { onDelete: "cascade" }),
+  ticketId: text("ticket_id").references(() => maintenanceTickets.id, { onDelete: "cascade" }),
+  fileName: text("file_name").notNull(),
+  mimeType: text("mime_type").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  data: bytea("data").notNull(),
+  uploadedBy: text("uploaded_by").references(() => authUsers.id, { onDelete: "set null" }),
+  createdAt: createdAt(),
+}, (table) => [
+  check("private_file_single_parent_check", sql`(${table.paymentId} IS NOT NULL) <> (${table.ticketId} IS NOT NULL)`),
+  uniqueIndex("private_file_payment_unique").on(table.paymentId),
+  uniqueIndex("private_file_ticket_unique").on(table.ticketId),
+  index("private_file_organization_idx").on(table.organizationId, table.createdAt),
+]);
+
+export const reminderLogStatus = pgEnum("reminder_log_status", ["processing", "sent", "failed"]);
+
+export const invoiceReminderLogs = pgTable("invoice_reminder_log", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  invoiceId: text("invoice_id").notNull().references(() => invoices.id, { onDelete: "cascade" }),
+  daysFromDue: integer("days_from_due").notNull(),
+  scheduledFor: date("scheduled_for").notNull(),
+  status: reminderLogStatus("status").notNull().default("processing"),
+  attemptCount: integer("attempt_count").notNull().default(1),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+  lastError: text("last_error"),
+  updatedAt: updatedAt(),
+  createdAt: createdAt(),
+}, (table) => [
+  uniqueIndex("invoice_reminder_occurrence_unique").on(table.invoiceId, table.daysFromDue, table.scheduledFor),
+  index("invoice_reminder_organization_date_idx").on(table.organizationId, table.scheduledFor),
 ]);
 
 export const authSchema = {

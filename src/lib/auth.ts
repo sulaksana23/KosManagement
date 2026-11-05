@@ -2,6 +2,7 @@ import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { db } from "@/db";
 import { authSchema } from "@/db/schema";
+import { sendEmail } from "@/lib/email";
 import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from "@/lib/password";
 
 const fallbackSecret = "kosmanager-local-development-secret-change-before-deploy";
@@ -36,6 +37,19 @@ export const auth = betterAuth({
     enabled: true,
     minPasswordLength: MIN_PASSWORD_LENGTH,
     maxPasswordLength: MAX_PASSWORD_LENGTH,
+    resetPasswordTokenExpiresIn: 30 * 60,
+    sendResetPassword: async ({ user, url }) => {
+      try {
+        const sent = await sendEmail({
+          to: user.email,
+          subject: "Reset kata sandi KosManager",
+          text: `Gunakan tautan berikut untuk membuat kata sandi baru. Tautan berlaku 30 menit:\n\n${url}\n\nJika Anda tidak meminta reset, abaikan email ini.`,
+        });
+        if (!sent) console.error("[auth] Email reset belum terkirim karena RESEND_API_KEY atau EMAIL_FROM belum diatur.");
+      } catch {
+        console.error("[auth] Pengiriman email reset gagal.");
+      }
+    },
   },
   trustedOrigins,
 });

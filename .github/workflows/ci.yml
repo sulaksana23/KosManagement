@@ -11,8 +11,29 @@ permissions:
 
 jobs:
   checks:
-    name: Lint, typecheck, dan tes unit
+    name: Lint, typecheck, tes, dan build
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: kosmanager_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d kosmanager_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/kosmanager_test
+      RUN_DB_INTEGRATION_TESTS: "1"
+      BETTER_AUTH_SECRET: ci-only-secret-not-used-in-production-1234567890
+      BETTER_AUTH_URL: http://localhost:3000
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      CRON_SECRET: ci-only-cron-secret-not-used-in-production-1234567890
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,9 +44,29 @@ jobs:
           cache: npm
       - name: Install dependency
         run: npm ci
+      - name: Terapkan migrasi ke PostgreSQL pengujian
+        run: npm run db:migrate
       - name: Lint
         run: npm run lint
       - name: Typecheck
         run: npm run typecheck
-      - name: Tes unit
+      - name: Tes unit dan integrasi database
         run: npm test
+      - name: Build produksi
+        run: npm run build
+      - name: Smoke test route HTTP
+        run: |
+          node_modules/.bin/next start --hostname 127.0.0.1 --port 3100 > /tmp/kos-manager-start.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail http://127.0.0.1:3100/login --output /tmp/kos-manager-login.html; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:3100/forgot-password --output /tmp/kos-manager-forgot.html
+          curl --fail --silent http://127.0.0.1:3100/reset-password --output /tmp/kos-manager-reset.html
+          grep -q 'Lupa kata sandi' /tmp/kos-manager-login.html
+          cron_status=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3100/api/cron/reminders)
+          test "$cron_status" = "401"
+          private_file_status=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3100/api/private-files/00000000-0000-4000-8000-000000000000)
+          test "$private_file_status" = "401"

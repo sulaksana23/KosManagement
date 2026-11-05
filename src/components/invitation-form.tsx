@@ -5,7 +5,7 @@ import { Copy, UserRoundPlus } from "lucide-react";
 import { createInvitation } from "@/server/actions";
 
 export function InvitationForm() {
-  const initialState: { error?: string; inviteLink?: string } = {};
+  const initialState: { error?: string; inviteLink?: string; emailSent?: boolean } = {};
   const [state, formAction, pending] = useActionState(createInvitation, initialState);
   const [copied, setCopied] = useState(false);
 
@@ -23,7 +23,7 @@ export function InvitationForm() {
     </form>
     {state.error && <p className="notice notice-error m-0" role="alert">{state.error}</p>}
     {state.inviteLink && <div className="grid gap-2 rounded-lg border border-[#cce5d4] bg-[#f0f8f2] p-3">
-      <p className="m-0 text-xs font-semibold text-[#286143]">Undangan aktif selama 7 hari. Bagikan tautan ini secara pribadi.</p>
+      <p className="m-0 text-xs font-semibold text-[#286143]">Undangan aktif selama 7 hari. {state.emailSent ? "Email undangan sudah dikirim." : "Email belum terkirim; salin dan bagikan tautan ini secara pribadi."}</p>
       <div className="flex min-w-0 items-center gap-2"><input className="input min-w-0 text-xs" readOnly value={state.inviteLink} aria-label="Tautan undangan" /><button className="btn btn-secondary shrink-0" type="button" onClick={copyLink}><Copy size={14} />{copied ? "Tersalin" : "Salin"}</button></div>
     </div>}
   </div>;

@@ -17,6 +17,8 @@ Gambar di atas adalah mockup visual. Aplikasi berjalan menggunakan data yang ter
 - Isolasi query berdasarkan workspace dari sesi server.
 - Permohonan sewa calon penghuni, keputusan pengelola, serta pembuatan profil dan kontrak secara atomik.
 - Pencatatan properti, kamar, dan penghuni; status kamar bisa diperbarui.
+- Edit properti, kamar, dan profil penghuni dengan audit log.
+- Reset kata sandi dan email undangan anggota/penghuni melalui Resend setelah environment email disetel.
 - Kontrak dengan validasi server dan penguncian kamar untuk mencegah tanggal aktif bertumpuk.
 - Tagihan bulanan idempoten per kontrak dan periode.
 - Pencatatan dan verifikasi pembayaran manual dengan pembaruan saldo invoice dalam transaksi.
@@ -24,6 +26,9 @@ Gambar di atas adalah mockup visual. Aplikasi berjalan menggunakan data yang ter
 - Riwayat aktivitas workspace untuk menelusuri perubahan penting secara terurut dan terpaginasikan.
 - Dashboard dan laporan pemasukan, biaya, tunggakan, serta okupansi dari database.
 - Ekspor CSV untuk pemasukan, biaya, dan status kamar.
+- Pencarian, filter, pagination server-side, serta filter periode/properti pada laporan.
+- Bukti pembayaran dan foto keluhan disimpan privat di PostgreSQL; akses dilindungi sesi, peran, workspace, dan kepemilikan.
+- Pengingat tagihan email terjadwal dengan konfigurasi hari sebelum/sesudah jatuh tempo dan pencatatan idempotent.
 - Migration PostgreSQL tersimpan di `drizzle/`.
 
 ## Menjalankan secara lokal
@@ -65,15 +70,21 @@ npm run dev
 
 Deployment Production Vercel menerapkan migration Drizzle yang belum dijalankan sebelum build aplikasi. Skrip ini hanya aktif saat `VERCEL_ENV=production`; Preview tidak mengubah database Production. Untuk migration lokal, jalankan `npm run db:migrate` secara manual. Pada Vercel, `BETTER_AUTH_URL` dan `NEXT_PUBLIC_APP_URL` Production harus memakai domain utama aplikasi; client auth memakai origin yang sedang dibuka.
 
+Untuk email, tambahkan `RESEND_API_KEY` dan `EMAIL_FROM` setelah domain pengirim diverifikasi di Resend. Reset kata sandi, undangan, dan pengingat otomatis menggunakan konfigurasi ini. Endpoint `/api/cron/reminders` perlu `CRON_SECRET` acak minimal 32 karakter. `vercel.json` menjadwalkannya setiap hari pukul 00:00 UTC (08:00 WITA). Jika email belum dikonfigurasi, reset/undangan tetap menyediakan tautan yang bisa dibagikan, sedangkan reminder mencatat kegagalan dan akan mencoba lagi pada jadwal berikutnya.
+
+Lampiran bukti bayar dan foto keluhan disimpan sebagai `bytea` di PostgreSQL, bukan Vercel Blob atau URL publik. Unggahan dibatasi 1,5 MB per gambar dan menerima JPEG, PNG, atau WebP. Pertimbangkan kapasitas database dan kebijakan backup bila volume file meningkat.
+
 Buka `http://localhost:3000`, pilih **Daftar**, lalu buat workspace. Untuk memakai Neon secara lokal, isi `DATABASE_URL` dari dashboard Neon. Jika tersedia, isi juga `DATABASE_URL_UNPOOLED` untuk menjalankan migration melalui koneksi langsung.
 
 Paket Free mencakup 1 properti, 10 kamar, dan 3 anggota (termasuk pemilik serta undangan aktif). Paket Pro membuka kuota tersebut tanpa batas. Untuk menerima permintaan upgrade Pro, tambahkan email admin ke `KOSMANAGER_ADMIN_EMAILS` pada environment aplikasi, lalu buka `/admin/plans`. Aktivasi saat ini ditinjau manual; pembayaran otomatis dan harga belum dikonfigurasi.
 
-Untuk menambahkan staf: pemilik membuat tautan dari menu **Anggota** lalu membagikannya secara pribadi. Penerima dapat mendaftar atau masuk dengan email tujuan undangan; tautan hanya berlaku sekali selama 7 hari. Email tidak dikirim otomatis.
+Untuk menambahkan staf: pemilik membuat undangan dari menu **Anggota**. Jika Resend sudah diatur, email dikirim otomatis; tautan tetap tersedia untuk disalin sebagai cadangan. Tautan hanya berlaku sekali selama 7 hari.
 
 ### Portal penghuni
 
-Isi email pada profil penghuni, lalu pilih **Undang ke portal** di daftar penghuni dan bagikan tautan yang dibuat. Penghuni dapat membuat akun atau masuk dengan email tersebut. Setelah masuk, penghuni melihat kontrak, tagihan, riwayat pembayaran, dan tiket keluhannya sendiri. Untuk melaporkan pembayaran, isi nominal serta referensi; status tetap menunggu sampai staf memverifikasinya di menu **Tagihan & bayar**. File foto bukti belum didukung.
+Isi email pada profil penghuni, lalu pilih **Undang ke portal**. Jika Resend sudah diatur, undangan dikirim otomatis; tautan juga dapat disalin. Penghuni melihat kontrak, tagihan, riwayat pembayaran, dan tiket miliknya sendiri. Saat melaporkan pembayaran, penghuni dapat menyertakan foto bukti. Status tetap menunggu sampai petugas memverifikasinya di menu **Tagihan & bayar**. Foto keluhan juga bisa ditambahkan dari portal.
+
+Pada menu **Pengingat**, pemilik/pengelola memilih berapa hari sebelum dan sesudah jatuh tempo email dikirim. Pastikan deployment menggunakan Vercel Cron dan environment email/rahasia cron telah diatur. Setiap pengiriman tercatat dan mencegah email ganda untuk tanggal pengingat yang sama.
 
 ### Data demo (opsional)
 
@@ -98,9 +109,9 @@ npm run db:migrate  # terapkan migration tersimpan
 npm run db:push     # sinkronisasi schema untuk development saja
 ```
 
-## Batas MVP saat ini
+## Batasan saat ini
 
-Email undangan tidak dikirim otomatis; pemilik membagikan tautan undangan sekali pakai melalui kanal pribadi. Satu akun hanya dapat terhubung ke satu workspace saat ini. Reset kata sandi belum dihubungkan ke layanan email. Portal penghuni kini menampilkan kontrak, tagihan, pembayaran, dan keluhan. Penghuni dapat melaporkan pembayaran dengan nominal dan referensi; pembayaran tetap menunggu sampai diverifikasi staf berizin. Lampiran foto bukti belum tersedia karena proyek tidak memakai layanan penyimpanan file. Tanda tangan kontrak, pengingat terjadwal, QRIS/payment gateway, dan rekonsiliasi otomatis belum tersedia. Ikon UI memakai Lucide yang dirender sebagai SVG.
+Email memerlukan akun Resend, API key, dan domain pengirim yang diverifikasi. Scheduler aktif pada deployment Vercel setelah `CRON_SECRET` ditambahkan. Penyimpanan bytea menjaga file tetap privat di database, tetapi ukuran database dan backup akan meningkat sesuai jumlah lampiran. Satu akun hanya dapat terhubung ke satu workspace. Tanda tangan kontrak, QRIS/payment gateway, dan rekonsiliasi otomatis belum tersedia. Ikon UI memakai Lucide yang dirender sebagai SVG.
 
 Jangan menaruh secret, password demo nyata, data penghuni, atau dokumen pribadi di GitHub.
 
@@ -114,4 +125,4 @@ Jangan menaruh secret, password demo nyata, data penghuni, atau dokumen pribadi 
 
 ## Pemeriksaan otomatis
 
-Jalankan `npm run lint`, `npm run typecheck`, dan `npm test` sebelum mengirim perubahan. GitHub Actions menjalankan ketiganya pada push ke `main` dan pull request. Tes unit mencakup hitung meter dan rupiah, saldo pembayaran, penyelesaian deposit, serta aturan kekuatan password. Alur database yang memerlukan akun dan data terpisah tetap perlu diperiksa pada lingkungan uji.
+Jalankan `npm run lint`, `npm run typecheck`, `npm test`, dan `npm run build` sebelum mengirim perubahan. GitHub Actions memakai PostgreSQL sementara untuk menerapkan migration dan mengetes isolasi workspace, lalu membangun aplikasi produksi. Tes unit mencakup aturan domain, password, pengingat, dan perhitungan transaksi; smoke test HTTP memeriksa halaman auth utama.

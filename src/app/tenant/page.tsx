@@ -1,7 +1,7 @@
 import { and, desc, eq, sum } from "drizzle-orm";
 import { BedDouble, CalendarDays, CreditCard, Wrench } from "lucide-react";
 import { db } from "@/db";
-import { invoices, leases, maintenanceTickets, payments, properties, rooms } from "@/db/schema";
+import { invoices, leases, maintenanceTickets, payments, privateFiles, properties, rooms } from "@/db/schema";
 import { EmptyState, FormCard, PageHeading, PageNotice, SelectField, StatusBadge, TextField } from "@/components/ui";
 import { createTenantTicket, submitTenantPayment } from "@/server/actions";
 import { requireTenantWorkspace } from "@/server/context";
@@ -20,12 +20,12 @@ export default async function TenantPortalPage({ searchParams }: { searchParams:
       .from(invoices).innerJoin(leases, eq(invoices.leaseId, leases.id)).innerJoin(rooms, eq(leases.roomId, rooms.id))
       .where(and(eq(invoices.organizationId, ctx.organizationId), eq(leases.organizationId, ctx.organizationId), eq(rooms.organizationId, ctx.organizationId), eq(leases.tenantId, ctx.tenant.id)))
       .orderBy(desc(invoices.dueAt)).limit(50),
-    db.select({ payment: payments, invoiceId: invoices.id })
-      .from(payments).innerJoin(invoices, eq(payments.invoiceId, invoices.id))
+    db.select({ payment: payments, invoiceId: invoices.id, proofFileId: privateFiles.id })
+      .from(payments).leftJoin(privateFiles, and(eq(privateFiles.paymentId, payments.id), eq(privateFiles.organizationId, ctx.organizationId))).innerJoin(invoices, eq(payments.invoiceId, invoices.id))
       .innerJoin(leases, eq(invoices.leaseId, leases.id))
       .where(and(eq(payments.organizationId, ctx.organizationId), eq(invoices.organizationId, ctx.organizationId), eq(leases.organizationId, ctx.organizationId), eq(leases.tenantId, ctx.tenant.id)))
       .orderBy(desc(payments.paidAt)).limit(50),
-    db.select().from(maintenanceTickets).where(and(
+    db.select({ ticket: maintenanceTickets, photoFileId: privateFiles.id }).from(maintenanceTickets).leftJoin(privateFiles, and(eq(privateFiles.ticketId, maintenanceTickets.id), eq(privateFiles.organizationId, ctx.organizationId))).where(and(
       eq(maintenanceTickets.organizationId, ctx.organizationId), eq(maintenanceTickets.tenantId, ctx.tenant.id),
     )).orderBy(desc(maintenanceTickets.createdAt)).limit(50),
     db.select({ invoiceId: payments.invoiceId, total: sum(payments.amount) }).from(payments).innerJoin(invoices, eq(payments.invoiceId, invoices.id)).innerJoin(leases, eq(invoices.leaseId, leases.id))
@@ -71,6 +71,7 @@ export default async function TenantPortalPage({ searchParams }: { searchParams:
               <input type="hidden" name="invoiceId" value={invoice.id} />
               <TextField name="amount" label="Nominal bayar (Rp)" type="number" min="1" max={availableToPay.toString()} defaultValue={availableToPay.toString()} required />
               <TextField name="reference" label="Nomor referensi (opsional)" placeholder="Contoh: 123456" />
+              <label className="field sm:col-span-3"><span>Foto bukti bayar (opsional, maks. 1,5 MB)</span><input className="input text-xs" type="file" name="proofFile" accept="image/jpeg,image/png,image/webp" /></label>
               <button className="btn btn-primary"><CreditCard size={14} />Laporkan pembayaran</button>
               <p className="muted m-0 text-[11px] sm:col-span-3">Pembayaran dicatat sebagai menunggu. Status tagihan berubah setelah pengelola memverifikasi transaksi.</p>
             </form>}
@@ -82,8 +83,8 @@ export default async function TenantPortalPage({ searchParams }: { searchParams:
     <section className="surface overflow-hidden">
       <div className="border-b border-[#e8eeeb] px-4 py-3"><h2 className="surface-title m-0">Riwayat pembayaran</h2></div>
       {paymentList.length === 0 ? <EmptyState title="Belum ada pembayaran" description="Konfirmasi pembayaran dan status verifikasinya akan tampil di sini." /> : <div className="divide-y divide-[#eef2f0]">
-        {paymentList.map(({ payment, invoiceId }) => <article key={payment.id} className="flex flex-wrap items-center justify-between gap-3 p-4">
-          <div><p className="m-0 font-semibold text-[#24372e]">{formatIDR(payment.amount)} · {formatDate(payment.paidAt)}</p><p className="muted mb-0 mt-1 text-xs">{payment.reference ? "Referensi " + payment.reference : "Tagihan " + invoiceId.slice(0, 8)}</p>{payment.note && payment.status === "rejected" && <p className="mb-0 mt-1 text-xs text-[#984b3c]">{payment.note}</p>}</div>
+        {paymentList.map(({ payment, invoiceId, proofFileId }) => <article key={payment.id} className="flex flex-wrap items-center justify-between gap-3 p-4">
+          <div><p className="m-0 font-semibold text-[#24372e]">{formatIDR(payment.amount)} · {formatDate(payment.paidAt)}</p><p className="muted mb-0 mt-1 text-xs">{payment.reference ? "Referensi " + payment.reference : "Tagihan " + invoiceId.slice(0, 8)}</p>{payment.note && payment.status === "rejected" && <p className="mb-0 mt-1 text-xs text-[#984b3c]">{payment.note}</p>}{proofFileId && <a className="mt-1 inline-block text-xs text-[#39795a] underline" href={`/api/private-files/${proofFileId}`}>Lihat bukti bayar</a>}</div>
           <StatusBadge status={payment.status} />
         </article>)}
       </div>}
@@ -98,13 +99,14 @@ export default async function TenantPortalPage({ searchParams }: { searchParams:
             { value: "Lainnya", label: "Lainnya" },
           ]} required />
           <label className="field"><span>Jelaskan keluhan</span><textarea className="textarea" name="description" maxLength={1000} required /></label>
+          <label className="field"><span>Foto kondisi (opsional, maks. 1,5 MB)</span><input className="input text-xs" type="file" name="photo" accept="image/jpeg,image/png,image/webp" /></label>
           <button className="btn btn-primary w-fit"><Wrench size={14} />Kirim keluhan</button>
         </form>}
       </FormCard>
       <section className="surface overflow-hidden">
         <div className="flex items-center gap-2 border-b border-[#e8eeeb] px-4 py-3"><CalendarDays size={16} className="text-[#438363]" /><h2 className="surface-title m-0">Status keluhan</h2></div>
         {ticketList.length === 0 ? <EmptyState title="Belum ada keluhan" description="Keluhan yang dikirim akan tercatat di sini." /> : <div className="divide-y divide-[#eef2f0]">
-          {ticketList.map((ticket) => <article key={ticket.id} className="grid gap-1 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><p className="m-0 font-semibold">{ticket.category}</p><StatusBadge status={ticket.status} /></div><p className="m-0 text-sm text-[#53645b]">{ticket.description}</p><p className="muted m-0 text-[11px]">{formatDate(ticket.createdAt)}</p></article>)}
+          {ticketList.map(({ ticket, photoFileId }) => <article key={ticket.id} className="grid gap-1 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><p className="m-0 font-semibold">{ticket.category}</p><StatusBadge status={ticket.status} /></div><p className="m-0 text-sm text-[#53645b]">{ticket.description}</p><p className="muted m-0 text-[11px]">{formatDate(ticket.createdAt)}</p>{photoFileId && <a className="text-xs text-[#39795a] underline" href={`/api/private-files/${photoFileId}`}>Lihat foto keluhan</a>}</article>)}
         </div>}
       </section>
     </div>

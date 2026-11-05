@@ -24,6 +24,7 @@ import {
   utilityReadings,
   payments,
   planRequests,
+  privateFiles,
 } from "@/db/schema";
 import { getServerSession, requireTenantWorkspace, requireUser, requireWorkspace } from "@/server/context";
 import { id, monthRange, todayISO } from "@/lib/format";
@@ -31,6 +32,9 @@ import { PLAN_LIMITS } from "@/lib/plans";
 import { applyInvoicePayment, calculateDepositSettlement, calculateUtilityAmount } from "@/lib/domain";
 import { hasLeaseConflictAtMoveIn } from "@/lib/rental-applications";
 import { requirePlatformAdmin } from "@/server/platform-admin";
+import { sendEmail } from "@/lib/email";
+import { readPrivateImage } from "@/lib/private-files";
+import { findWorkspaceProperty } from "@/server/repositories/property-repository";
 
 const requiredText = (max: number) => z.string().trim().min(1).max(max);
 const money = z.string().regex(/^\d{1,14}$/, "Masukkan nominal rupiah berupa angka bulat.");
@@ -38,6 +42,11 @@ const positiveMoney = money.refine((amount) => /^\d{1,14}$/.test(amount) && /[1-
 
 function value(form: FormData, key: string) {
   return String(form.get(key) ?? "").trim();
+}
+
+function isValidTimezone(timezone: string) {
+  try { new Intl.DateTimeFormat("en-US", { timeZone: timezone }); return true; }
+  catch { return false; }
 }
 
 function go(path: string, key: "notice" | "error", message: string): never {
@@ -81,7 +90,7 @@ export async function createWorkspace(form: FormData) {
   redirect("/dashboard");
 }
 
-export async function createInvitation(_previousState: { error?: string; inviteLink?: string }, form: FormData): Promise<{ error?: string; inviteLink?: string }> {
+export async function createInvitation(_previousState: { error?: string; inviteLink?: string; emailSent?: boolean }, form: FormData): Promise<{ error?: string; inviteLink?: string; emailSent?: boolean }> {
   const ctx = await requireWorkspace(["owner"]);
   const parsed = z.object({ email: z.email(), role: z.enum(["manager", "finance", "staff"]) }).safeParse({
     email: value(form, "email").toLowerCase(), role: value(form, "role"),
@@ -133,7 +142,14 @@ export async function createInvitation(_previousState: { error?: string; inviteL
   }
   revalidatePath("/team");
   const baseUrl = (process.env.NEXT_PUBLIC_APP_URL ?? process.env.BETTER_AUTH_URL ?? "http://localhost:3000").replace(/\/$/, "");
-  return { error: undefined, inviteLink: `${baseUrl}/invite?token=${encodeURIComponent(token)}` };
+  const inviteLink = `${baseUrl}/invite?token=${encodeURIComponent(token)}`;
+  let emailSent = false;
+  try {
+    emailSent = await sendEmail({ to: parsed.data.email, subject: "Undangan workspace KosManager", text: `Anda diundang bergabung ke workspace ${ctx.organizationName}. Tautan berlaku 7 hari dan hanya bisa digunakan oleh email ini:\n\n${inviteLink}\n\nJika Anda tidak mengenal undangan ini, abaikan email ini.` });
+  } catch {
+    console.error("[invitation] Pengiriman email undangan gagal.");
+  }
+  return { inviteLink, emailSent };
 }
 
 export async function acceptInvitation(token: string) {
@@ -252,6 +268,30 @@ export async function createProperty(form: FormData) {
   go("/properties", "notice", "Properti berhasil ditambahkan.");
 }
 
+export async function updateProperty(form: FormData) {
+  const ctx = await requireWorkspace(["owner", "manager"]);
+  const parsed = z.object({
+    propertyId: requiredText(80), name: requiredText(100), address: requiredText(300),
+    timezone: requiredText(80), rules: z.string().max(2000), facilities: z.string().max(1000),
+  }).safeParse({
+    propertyId: value(form, "propertyId"), name: value(form, "name"), address: value(form, "address"),
+    timezone: value(form, "timezone"), rules: value(form, "rules"), facilities: value(form, "facilities"),
+  });
+  if (!parsed.success || !isValidTimezone(parsed.data.timezone)) go("/properties", "error", "Periksa nama, alamat, zona waktu, dan informasi properti.");
+  const propertyId = parsed.data.propertyId;
+  const facilities = parsed.data.facilities.split(",").map((item) => item.trim()).filter(Boolean).slice(0, 20);
+  const property = await findWorkspaceProperty(ctx.organizationId, propertyId);
+  if (!property) go("/properties", "error", "Properti tidak ditemukan.");
+  await db.transaction(async (tx) => {
+    await tx.update(properties).set({ name: parsed.data.name, address: parsed.data.address, timezone: parsed.data.timezone, rules: parsed.data.rules || null, facilities, updatedAt: new Date() })
+      .where(and(eq(properties.id, propertyId), eq(properties.organizationId, ctx.organizationId)));
+    await audit(tx, ctx.organizationId, ctx.userId, "property.updated", "property", propertyId, { before: { name: property.name, address: property.address, timezone: property.timezone }, after: { name: parsed.data.name, address: parsed.data.address, timezone: parsed.data.timezone } });
+  });
+  revalidatePath("/properties");
+  revalidatePath("/rooms");
+  go("/properties", "notice", "Informasi properti diperbarui.");
+}
+
 export async function createRoom(form: FormData) {
   const ctx = await requireWorkspace(["owner", "manager"]);
   const parsed = z.object({
@@ -290,6 +330,33 @@ export async function createRoom(form: FormData) {
   revalidatePath("/rooms");
   revalidatePath("/dashboard");
   go("/rooms", "notice", "Kamar berhasil ditambahkan.");
+}
+
+export async function updateRoom(form: FormData) {
+  const ctx = await requireWorkspace(["owner", "manager"]);
+  const parsed = z.object({
+    roomId: requiredText(80), code: requiredText(30), type: requiredText(50), floor: z.string().max(40),
+    monthlyRent: positiveMoney, deposit: money, facilities: z.string().max(1000), notes: z.string().max(1000),
+  }).safeParse({
+    roomId: value(form, "roomId"), code: value(form, "code"), type: value(form, "type"), floor: value(form, "floor"),
+    monthlyRent: value(form, "monthlyRent"), deposit: value(form, "deposit"), facilities: value(form, "facilities"), notes: value(form, "notes"),
+  });
+  if (!parsed.success) go("/rooms", "error", "Periksa kode, tipe, tarif, dan informasi kamar.");
+  const [room] = await db.select().from(rooms).where(and(eq(rooms.id, parsed.data.roomId), eq(rooms.organizationId, ctx.organizationId))).limit(1);
+  if (!room) go("/rooms", "error", "Kamar tidak ditemukan.");
+  const facilities = parsed.data.facilities.split(",").map((item) => item.trim()).filter(Boolean).slice(0, 20);
+  try {
+    await db.transaction(async (tx) => {
+      await tx.update(rooms).set({ code: parsed.data.code, type: parsed.data.type, floor: parsed.data.floor || null, monthlyRent: parsed.data.monthlyRent, deposit: parsed.data.deposit, facilities, notes: parsed.data.notes || null, updatedAt: new Date() })
+        .where(and(eq(rooms.id, room.id), eq(rooms.organizationId, ctx.organizationId)));
+      await audit(tx, ctx.organizationId, ctx.userId, "room.updated", "room", room.id, { before: { code: room.code, monthlyRent: room.monthlyRent, deposit: room.deposit }, after: { code: parsed.data.code, monthlyRent: parsed.data.monthlyRent, deposit: parsed.data.deposit } });
+    });
+  } catch {
+    go("/rooms", "error", "Kode kamar sudah dipakai pada properti yang sama.");
+  }
+  revalidatePath("/rooms");
+  revalidatePath("/dashboard");
+  go("/rooms", "notice", "Informasi kamar diperbarui. Kontrak yang sudah berjalan tidak berubah.");
 }
 
 export async function updateRoomStatus(form: FormData) {
@@ -337,6 +404,31 @@ export async function createTenant(form: FormData) {
   });
   revalidatePath("/tenants");
   go("/tenants", "notice", "Penghuni berhasil ditambahkan.");
+}
+
+export async function updateTenant(form: FormData) {
+  const ctx = await requireWorkspace(["owner", "manager"]);
+  const parsed = z.object({
+    tenantId: requiredText(80), fullName: requiredText(120), phone: requiredText(30),
+    email: z.union([z.literal(""), z.email()]), emergencyContactName: z.string().max(120),
+    emergencyContactPhone: z.string().max(30), notes: z.string().max(1000),
+  }).safeParse({
+    tenantId: value(form, "tenantId"), fullName: value(form, "fullName"), phone: value(form, "phone"),
+    email: value(form, "email").toLowerCase(), emergencyContactName: value(form, "emergencyContactName"),
+    emergencyContactPhone: value(form, "emergencyContactPhone"), notes: value(form, "notes"),
+  });
+  if (!parsed.success) go("/tenants", "error", "Periksa nama, telepon, dan email penghuni.");
+  const [tenant] = await db.select().from(tenants).where(and(eq(tenants.id, parsed.data.tenantId), eq(tenants.organizationId, ctx.organizationId))).limit(1);
+  if (!tenant) go("/tenants", "error", "Penghuni tidak ditemukan.");
+  if (tenant.userId && (parsed.data.email || "").toLowerCase() !== (tenant.email || "").toLowerCase()) go("/tenants", "error", "Email akun portal yang sudah aktif tidak dapat diubah di sini.");
+  await db.transaction(async (tx) => {
+    await tx.update(tenants).set({ fullName: parsed.data.fullName, phone: parsed.data.phone, email: parsed.data.email || null, emergencyContactName: parsed.data.emergencyContactName || null, emergencyContactPhone: parsed.data.emergencyContactPhone || null, notes: parsed.data.notes || null, updatedAt: new Date() })
+      .where(and(eq(tenants.id, tenant.id), eq(tenants.organizationId, ctx.organizationId)));
+    await audit(tx, ctx.organizationId, ctx.userId, "tenant.updated", "tenant", tenant.id, { before: { fullName: tenant.fullName, phone: tenant.phone, email: tenant.email }, after: { fullName: parsed.data.fullName, phone: parsed.data.phone, email: parsed.data.email || null } });
+  });
+  revalidatePath("/tenants");
+  revalidatePath("/leases");
+  go("/tenants", "notice", "Informasi penghuni diperbarui.");
 }
 
 export async function createRentalApplication(form: FormData) {
@@ -1026,6 +1118,12 @@ export async function correctUtilityReading(form: FormData) {
 
 export async function createMaintenanceTicket(form: FormData) {
   const ctx = await requireWorkspace(["owner", "manager"]);
+  let photo;
+  try { photo = await readPrivateImage(form, "photo"); }
+  catch (error) {
+    if (error instanceof Error && error.message === "PRIVATE_FILE_TOO_LARGE") go("/maintenance", "error", "Foto maksimal berukuran 1,5 MB.");
+    go("/maintenance", "error", "Gunakan foto JPEG, PNG, atau WebP yang valid.");
+  }
   const parsed = z.object({
     roomId: requiredText(80), tenantId: z.string().max(80), category: requiredText(60), description: requiredText(1000),
     priority: z.enum(["low", "normal", "high", "urgent"]),
@@ -1046,6 +1144,7 @@ export async function createMaintenanceTicket(form: FormData) {
       id: ticketId, organizationId: ctx.organizationId, roomId: room.id, tenantId: parsed.data.tenantId || null,
       category: parsed.data.category, description: parsed.data.description, priority: parsed.data.priority, status: "new",
     });
+    if (photo) await tx.insert(privateFiles).values({ id: id(), organizationId: ctx.organizationId, ticketId, fileName: photo.fileName, mimeType: photo.mimeType, sizeBytes: photo.sizeBytes, data: photo.data, uploadedBy: ctx.userId });
     await audit(tx, ctx.organizationId, ctx.userId, "maintenance.created", "maintenance_ticket", ticketId);
   });
   revalidatePath("/maintenance");
@@ -1181,9 +1280,9 @@ export async function reviewPlanRequest(form: FormData) {
 
 
 export async function createTenantPortalInvite(
-  _previousState: { error?: string; inviteLink?: string },
+  _previousState: { error?: string; inviteLink?: string; emailSent?: boolean },
   form: FormData,
-): Promise<{ error?: string; inviteLink?: string }> {
+): Promise<{ error?: string; inviteLink?: string; emailSent?: boolean }> {
   const ctx = await requireWorkspace(["owner", "manager"]);
   const parsed = z.object({ tenantId: requiredText(80) }).safeParse({ tenantId: value(form, "tenantId") });
   if (!parsed.success) return { error: "Profil penghuni tidak valid." };
@@ -1191,6 +1290,7 @@ export async function createTenantPortalInvite(
   const token = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
   const invitationId = id();
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  let tenantEmail = "";
   try {
     await db.transaction(async (tx) => {
       const [organization] = await tx.select({ plan: organizations.plan }).from(organizations)
@@ -1204,6 +1304,7 @@ export async function createTenantPortalInvite(
       if (tenant.userId) throw new Error("TENANT_PORTAL_ACTIVE");
       if (!tenant.email) throw new Error("TENANT_EMAIL_REQUIRED");
       const email = tenant.email.trim().toLowerCase();
+      tenantEmail = email;
 
       const [existingMember] = await tx.select({ id: members.id }).from(members).innerJoin(authUsers, eq(members.userId, authUsers.id))
         .where(sql`lower(${authUsers.email}) = ${email}`).limit(1);
@@ -1245,11 +1346,24 @@ export async function createTenantPortalInvite(
   const deploymentBaseUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined;
   const configuredBaseUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.BETTER_AUTH_URL ?? deploymentBaseUrl ?? "http://localhost:3000";
   const baseUrl = configuredBaseUrl.endsWith("/") ? configuredBaseUrl.slice(0, -1) : configuredBaseUrl;
-  return { inviteLink: baseUrl + "/invite?token=" + encodeURIComponent(token) };
+  const inviteLink = baseUrl + "/invite?token=" + encodeURIComponent(token);
+  let emailSent = false;
+  try {
+    emailSent = await sendEmail({ to: tenantEmail, subject: "Undangan portal penghuni KosManager", text: `Anda diundang untuk mengakses portal penghuni KosManager. Tautan berlaku 7 hari dan hanya dapat digunakan dengan email ini:\n\n${inviteLink}\n\nJika Anda tidak mengenal undangan ini, abaikan email ini.` });
+  } catch {
+    console.error("[tenant-invitation] Pengiriman email undangan gagal.");
+  }
+  return { inviteLink, emailSent };
 }
 
 export async function createTenantTicket(form: FormData) {
   const ctx = await requireTenantWorkspace();
+  let photo;
+  try { photo = await readPrivateImage(form, "photo"); }
+  catch (error) {
+    if (error instanceof Error && error.message === "PRIVATE_FILE_TOO_LARGE") go("/tenant", "error", "Foto maksimal berukuran 1,5 MB.");
+    go("/tenant", "error", "Gunakan foto JPEG, PNG, atau WebP yang valid.");
+  }
   const parsed = z.object({
     category: requiredText(60),
     description: requiredText(1000),
@@ -1269,6 +1383,7 @@ export async function createTenantTicket(form: FormData) {
       id: ticketId, organizationId: ctx.organizationId, tenantId: ctx.tenant.id, roomId: lease.roomId,
       category: parsed.data.category, description: parsed.data.description, priority: "normal", status: "new",
     });
+    if (photo) await tx.insert(privateFiles).values({ id: id(), organizationId: ctx.organizationId, ticketId, fileName: photo.fileName, mimeType: photo.mimeType, sizeBytes: photo.sizeBytes, data: photo.data, uploadedBy: ctx.userId });
     await audit(tx, ctx.organizationId, ctx.userId, "maintenance.created_by_tenant", "maintenance_ticket", ticketId);
   });
   revalidatePath("/tenant");
@@ -1286,6 +1401,12 @@ export async function getAuthenticatedLandingPath() {
 }
 export async function submitTenantPayment(form: FormData) {
   const ctx = await requireTenantWorkspace();
+  let proof;
+  try { proof = await readPrivateImage(form, "proofFile"); }
+  catch (error) {
+    if (error instanceof Error && error.message === "PRIVATE_FILE_TOO_LARGE") go("/tenant", "error", "Foto bukti bayar maksimal berukuran 1,5 MB.");
+    go("/tenant", "error", "Gunakan foto JPEG, PNG, atau WebP yang valid.");
+  }
   const parsed = z.object({
     invoiceId: z.string().uuid(), amount: positiveMoney, reference: z.string().trim().max(120),
   }).safeParse({
@@ -1319,6 +1440,7 @@ export async function submitTenantPayment(form: FormData) {
         method: "transfer", reference: parsed.data.reference || null, status: "pending",
         note: "Konfirmasi pembayaran dikirim dari portal penghuni.",
       });
+      if (proof) await tx.insert(privateFiles).values({ id: id(), organizationId: ctx.organizationId, paymentId, fileName: proof.fileName, mimeType: proof.mimeType, sizeBytes: proof.sizeBytes, data: proof.data, uploadedBy: ctx.userId });
       await audit(tx, ctx.organizationId, ctx.userId, "payment.declared_by_tenant", "payment", paymentId, {
         invoiceId: invoice.id, amount: parsed.data.amount, reference: parsed.data.reference || null,
       });
@@ -1388,4 +1510,33 @@ export async function reviewTenantPayment(form: FormData) {
   revalidatePath("/tenant");
   revalidatePath("/dashboard");
   go("/billing", "notice", parsed.data.decision === "verify" ? "Pembayaran diverifikasi dan saldo tagihan diperbarui." : "Konfirmasi pembayaran ditolak.");
+}
+
+export async function updateReminderSettings(form: FormData) {
+  const ctx = await requireWorkspace(["owner", "manager"]);
+  const parseDays = (field: string) => {
+    const raw = value(form, field);
+    if (!raw) return [] as number[];
+    return raw.split(",").map((part) => part.trim());
+  };
+  const rawBefore = parseDays("daysBefore");
+  const rawAfter = parseDays("daysAfter");
+  const list = z.array(z.string().regex(/^(?:[1-9]|[12]\d|30)$/).transform(Number)).max(5).refine((items) => new Set(items).size === items.length);
+  const before = list.safeParse(rawBefore);
+  const after = list.safeParse(rawAfter);
+  const enabled = z.enum(["on", "off"]).safeParse(value(form, "enabled"));
+  if (!before.success || !after.success || !enabled.success) go("/reminders", "error", "Masukkan maksimal 5 hari pengingat yang unik, antara 1–30.");
+  const [previous] = await db.select({ remindersEnabled: organizations.remindersEnabled, reminderDaysBefore: organizations.reminderDaysBefore, reminderDaysAfter: organizations.reminderDaysAfter }).from(organizations)
+    .where(eq(organizations.id, ctx.organizationId)).limit(1);
+  if (!previous) go("/reminders", "error", "Workspace tidak ditemukan.");
+  await db.transaction(async (tx) => {
+    await tx.update(organizations).set({ remindersEnabled: enabled.data === "on", reminderDaysBefore: before.data, reminderDaysAfter: after.data, updatedAt: new Date() })
+      .where(eq(organizations.id, ctx.organizationId));
+    await audit(tx, ctx.organizationId, ctx.userId, "reminders.settings_updated", "organization", ctx.organizationId, {
+      before: { enabled: previous.remindersEnabled, daysBefore: previous.reminderDaysBefore, daysAfter: previous.reminderDaysAfter },
+      after: { enabled: enabled.data === "on", daysBefore: before.data, daysAfter: after.data },
+    });
+  });
+  revalidatePath("/reminders");
+  go("/reminders", "notice", enabled.data === "on" ? "Pengingat otomatis aktif dan mengikuti jadwal workspace." : "Pengingat otomatis dinonaktifkan.");
 }

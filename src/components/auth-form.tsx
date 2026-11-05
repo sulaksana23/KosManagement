@@ -223,6 +223,12 @@ export function AuthForm({ mode, invitationToken }: { mode: "login" | "register"
             </button>
           </form>
 
+          {!isRegister && !invitationToken && (
+            <p className="mb-0 mt-3 text-right text-xs">
+              <Link className="font-semibold text-[#245c49] hover:underline" href="/forgot-password">Lupa kata sandi?</Link>
+            </p>
+          )}
+
           <p className="mb-0 mt-5 text-center text-xs text-[#71817b]">
             {isRegister ? "Sudah punya akun? " : "Belum punya akun? "}
             <Link

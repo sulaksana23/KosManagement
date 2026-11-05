@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import {
   Building2, CreditCard, FileText, LayoutDashboard, LogOut, ClipboardList, UserPlus,
-  Menu, Receipt, Settings, Users, Wallet, Wrench, X, Home, Crown,
+  Menu, Receipt, Settings, Users, Wallet, Wrench, X, Home, Crown, BellRing,
 } from "lucide-react";
 import { authClient } from "@/lib/auth-client";
 
@@ -17,6 +17,7 @@ const navigation = [
   { label: "Permohonan", href: "/applications", icon: UserPlus, roles: ["owner", "manager"] },
   { label: "Kontrak", href: "/leases", icon: FileText, roles: ["owner", "manager"] },
   { label: "Tagihan & bayar", href: "/billing", icon: CreditCard, roles: ["owner", "manager", "finance"] },
+  { label: "Pengingat", href: "/reminders", icon: BellRing, roles: ["owner", "manager"] },
   { label: "Meter utilitas", href: "/utilities", icon: Receipt, roles: ["owner", "manager", "finance"] },
   { label: "Biaya", href: "/expenses", icon: Wallet, roles: ["owner", "finance"] },
   { label: "Perawatan", href: "/maintenance", icon: Wrench, roles: ["owner", "manager", "staff"] },

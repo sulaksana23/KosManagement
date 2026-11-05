@@ -16,7 +16,7 @@ export function TenantPortalInviteForm({ tenantId }: { tenantId: string }) {
 
   return <div className="grid gap-2">
     {state.inviteLink ? <div className="flex flex-wrap items-center gap-2">
-      <span className="badge badge-amber">Undangan aktif</span>
+      <span className="badge badge-amber">{state.emailSent ? "Email terkirim" : "Undangan aktif"}</span>
       <button className="btn btn-secondary" type="button" onClick={copyLink}><Copy size={14} />{copied ? "Tersalin" : "Salin tautan"}</button>
     </div> : <form action={formAction}>
       <input type="hidden" name="tenantId" value={tenantId} />
