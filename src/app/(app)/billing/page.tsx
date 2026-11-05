@@ -6,6 +6,7 @@ import { EmptyState, FormCard, PageHeading, PageNotice, StatusBadge, TextField }
 import { createPayment, generateMonthlyInvoices, reviewTenantPayment } from "@/server/actions";
 import { requireWorkspace } from "@/server/context";
 import { ConfirmSubmitButton } from "@/components/confirm-submit-button";
+import { CopyReminderButton } from "@/components/copy-reminder-button";
 import { formatDate, formatIDR, todayISO } from "@/lib/format";
 
 export default async function BillingPage({ searchParams }: { searchParams: Promise<{ notice?: string; error?: string }> }) {
@@ -19,9 +20,13 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
       .from(payments).innerJoin(invoices, eq(payments.invoiceId, invoices.id)).innerJoin(leases, eq(invoices.leaseId, leases.id)).innerJoin(tenants, eq(leases.tenantId, tenants.id)).innerJoin(rooms, eq(leases.roomId, rooms.id))
       .where(and(eq(payments.organizationId, ctx.organizationId), eq(invoices.organizationId, ctx.organizationId), eq(leases.organizationId, ctx.organizationId), eq(tenants.organizationId, ctx.organizationId), eq(rooms.organizationId, ctx.organizationId))).orderBy(desc(payments.paidAt)).limit(100),
   ]);
-  const currentMonth = todayISO().slice(0, 7);
+  const today = todayISO();
+  const reminderThrough = new Date(`${today}T00:00:00Z`);
+  reminderThrough.setUTCDate(reminderThrough.getUTCDate() + 7);
+  const reminderThroughDate = reminderThrough.toISOString().slice(0, 10);
+  const currentMonth = today.slice(0, 7);
   return <div className="page-stack">
-    <PageHeading title="Tagihan & pembayaran" description="Buat tagihan bulanan dan catat pembayaran yang diverifikasi." />
+    <PageHeading title="Tagihan & pembayaran" description="Buat tagihan, verifikasi pembayaran, dan salin pesan pengingat untuk dikirim secara manual." />
     <PageNotice notice={params.notice} error={params.error} />
     <div className="content-grid">
       <FormCard title="Buat tagihan bulanan" description="Idempoten per kontrak dan periode; tagihan yang sudah ada dilewati.">
@@ -33,10 +38,13 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
     </div>
     <section className="surface overflow-hidden">
       <div className="flex items-center gap-2 border-b border-[#e8eeeb] px-4 py-3"><CreditCard size={16} className="text-[#438363]" /><h2 className="surface-title m-0">Daftar tagihan</h2></div>
-      {invoiceList.length === 0 ? <EmptyState title="Belum ada tagihan" description="Buat kontrak aktif, lalu buat tagihan untuk periode berjalan." /> : <div className="table-wrap"><table className="data-table"><thead><tr><th>PENGHUNI</th><th>KAMAR</th><th>PERIODE</th><th>JATUH TEMPO</th><th>TOTAL</th><th>TERBAYAR</th><th>STATUS</th><th>CATAT PEMBAYARAN</th></tr></thead><tbody>{invoiceList.map(({ invoice, tenantName, roomCode }) => {
+      {invoiceList.length === 0 ? <EmptyState title="Belum ada tagihan" description="Buat kontrak aktif, lalu buat tagihan untuk periode berjalan." /> : <div className="table-wrap"><table className="data-table"><thead><tr><th>PENGHUNI</th><th>KAMAR</th><th>PERIODE</th><th>JATUH TEMPO</th><th>TOTAL</th><th>TERBAYAR</th><th>STATUS</th><th>TINDAK LANJUT</th><th>CATAT PEMBAYARAN</th></tr></thead><tbody>{invoiceList.map(({ invoice, tenantName, roomCode }) => {
         const remaining = BigInt(invoice.amount) - BigInt(invoice.paidAmount);
-        const displayedStatus = remaining > BigInt(0) && invoice.dueAt < todayISO() ? "overdue" : invoice.status;
-        return <tr key={invoice.id}><td className="font-semibold">{tenantName}</td><td>{roomCode}</td><td>{formatDate(invoice.periodStart)}</td><td>{formatDate(invoice.dueAt)}</td><td>{formatIDR(invoice.amount)}</td><td>{formatIDR(invoice.paidAmount)}</td><td><StatusBadge status={displayedStatus} /></td><td>{remaining > BigInt(0) && invoice.status !== "cancelled" ? <form action={createPayment} className="flex min-w-[310px] items-center gap-1.5"><input type="hidden" name="invoiceId" value={invoice.id} /><input className="input min-h-8 w-28 px-2 py-1 text-[11px]" name="amount" type="number" min="1" max={remaining.toString()} defaultValue={remaining.toString()} aria-label="Nominal pembayaran" required /><select className="select min-h-8 w-[104px] px-2 py-1 text-[11px]" name="method" defaultValue="transfer" aria-label="Metode pembayaran"><option value="transfer">Transfer</option><option value="cash">Tunai</option><option value="qris">QRIS manual</option></select><button className="btn btn-quiet">Verifikasi</button></form> : <span className="text-[11px] text-[#82918b]">—</span>}</td></tr>;
+        const displayedStatus = remaining > BigInt(0) && invoice.status !== "cancelled" && invoice.dueAt < today ? "overdue" : invoice.status;
+        const isReminderEligible = remaining > BigInt(0) && invoice.status !== "cancelled" && invoice.dueAt <= reminderThroughDate;
+        const daysLate = Math.max(0, Math.floor((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${invoice.dueAt}T00:00:00Z`)) / 86_400_000));
+        const reminderMessage = `Halo ${tenantName}, kami mengingatkan tagihan kos kamar ${roomCode} periode ${formatDate(invoice.periodStart)}. Saldo tagihan yang tercatat saat ini ${formatIDR(remaining)}. ${invoice.dueAt < today ? `Tagihan ini terlambat ${daysLate} hari sejak ${formatDate(invoice.dueAt)}.` : `Jatuh tempo pada ${formatDate(invoice.dueAt)}.`} Jika Anda sudah mengirim konfirmasi pembayaran, tidak perlu membayar ulang; kami akan memeriksanya. Terima kasih.`;
+        return <tr key={invoice.id}><td className="font-semibold">{tenantName}</td><td>{roomCode}</td><td>{formatDate(invoice.periodStart)}</td><td>{formatDate(invoice.dueAt)}</td><td>{formatIDR(invoice.amount)}</td><td>{formatIDR(invoice.paidAmount)}</td><td><StatusBadge status={displayedStatus} /></td><td>{isReminderEligible ? <CopyReminderButton message={reminderMessage} recipient={tenantName} /> : <span className="text-[11px] text-[#82918b]">—</span>}</td><td>{remaining > BigInt(0) && invoice.status !== "cancelled" ? <form action={createPayment} className="flex min-w-[310px] items-center gap-1.5"><input type="hidden" name="invoiceId" value={invoice.id} /><input className="input min-h-8 w-28 px-2 py-1 text-[11px]" name="amount" type="number" min="1" max={remaining.toString()} defaultValue={remaining.toString()} aria-label="Nominal pembayaran" required /><select className="select min-h-8 w-[104px] px-2 py-1 text-[11px]" name="method" defaultValue="transfer" aria-label="Metode pembayaran"><option value="transfer">Transfer</option><option value="cash">Tunai</option><option value="qris">QRIS manual</option></select><button className="btn btn-quiet">Verifikasi</button></form> : <span className="text-[11px] text-[#82918b]">—</span>}</td></tr>;
       })}</tbody></table></div>}
     </section>
     <section className="surface overflow-hidden">
