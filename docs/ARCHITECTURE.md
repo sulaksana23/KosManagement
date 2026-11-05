@@ -38,6 +38,10 @@ Upload dokumen/foto tidak aktif dan proyek tidak bergantung pada object storage.
 
 Belum diaktifkan. Pembayaran manual anggota berizin mencatat verifikasi, mengunci invoice, dan memperbarui saldo dalam transaksi. Adapter gateway baru boleh dibuat setelah provider/kredensial tersedia; webhook perlu verifikasi signature dan idempotency. Redirect browser tidak menjadi bukti pembayaran berhasil.
 
+## Migration saat deployment
+
+Build Production Vercel menjalankan `scripts/migrate-production.mjs` sebelum `next build`. Skrip memvalidasi `BETTER_AUTH_SECRET`, lalu menerapkan migration yang belum tercatat lewat Drizzle. Ia memakai `DATABASE_URL_UNPOOLED` bila tersedia dan hanya berjalan saat `VERCEL_ENV=production`; build Preview dan lokal tidak menyentuh database secara otomatis. Untuk development, jalankan `npm run db:migrate` setelah mengisi `.env.local`.
+
 ## Struktur implementasi saat ini
 
 - `src/app`: route, layout, state loading/error, dan komposisi halaman server.

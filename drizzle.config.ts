@@ -9,6 +9,6 @@ export default defineConfig({
   out: "./drizzle",
   dialect: "postgresql",
   dbCredentials: {
-    url: process.env.DATABASE_URL ?? "postgresql://kosmanager:kosmanager@localhost:5432/kosmanager",
+    url: process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL ?? "postgresql://kosmanager:kosmanager@localhost:5432/kosmanager",
   },
 });

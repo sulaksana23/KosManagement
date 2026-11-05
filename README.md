@@ -60,7 +60,9 @@ npm run db:migrate
 npm run dev
 ```
 
-Buka `http://localhost:3000`, pilih **Daftar**, lalu buat workspace. Untuk memakai Neon, isi `DATABASE_URL` dari dashboard Neon sebelum menjalankan migration.
+Deployment Production Vercel menerapkan migration Drizzle yang belum dijalankan sebelum build aplikasi. Skrip ini hanya aktif saat `VERCEL_ENV=production`; Preview tidak mengubah database Production. Untuk migration lokal, jalankan `npm run db:migrate` secara manual.
+
+Buka `http://localhost:3000`, pilih **Daftar**, lalu buat workspace. Untuk memakai Neon secara lokal, isi `DATABASE_URL` dari dashboard Neon. Jika tersedia, isi juga `DATABASE_URL_UNPOOLED` untuk menjalankan migration melalui koneksi langsung.
 
 Paket Free mencakup 1 properti, 10 kamar, dan 3 anggota (termasuk pemilik serta undangan aktif). Paket Pro membuka kuota tersebut tanpa batas. Untuk menerima permintaan upgrade Pro, tambahkan email admin ke `KOSMANAGER_ADMIN_EMAILS` pada environment aplikasi, lalu buka `/admin/plans`. Aktivasi saat ini ditinjau manual; pembayaran otomatis dan harga belum dikonfigurasi.
 
