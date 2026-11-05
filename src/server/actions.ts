@@ -1,6 +1,6 @@
 "use server";
 
-import { and, count, eq, gte, gt, isNull, lte, or, sql, sum } from "drizzle-orm";
+import { and, count, eq, gte, gt, isNull, lte, ne, or, sql, sum } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -384,23 +384,191 @@ export async function createLease(form: FormData) {
   go("/leases", "notice", "Kontrak berhasil dibuat.");
 }
 
+export async function renewLease(form: FormData) {
+  const ctx = await requireWorkspace(["owner", "manager"]);
+  const parsed = z.object({
+    leaseId: requiredText(80),
+    endsAt: z.iso.date(),
+    monthlyRent: positiveMoney,
+    deposit: money,
+    dueDay: z.coerce.number().int().min(1).max(31),
+  }).safeParse({
+    leaseId: value(form, "leaseId"),
+    endsAt: value(form, "endsAt"),
+    monthlyRent: value(form, "monthlyRent"),
+    deposit: value(form, "deposit") || "0",
+    dueDay: value(form, "dueDay"),
+  });
+  if (!parsed.success) go("/leases", "error", "Periksa tanggal akhir, tarif, deposit, dan tanggal jatuh tempo.");
+
+  const today = todayISO();
+  let renewedLeaseId = "";
+  try {
+    await db.transaction(async (tx) => {
+      const [lease] = await tx.select({
+        id: leases.id,
+        organizationId: leases.organizationId,
+        tenantId: leases.tenantId,
+        roomId: leases.roomId,
+        startsAt: leases.startsAt,
+        endsAt: leases.endsAt,
+        monthlyRent: leases.monthlyRent,
+        deposit: leases.deposit,
+        dueDay: leases.dueDay,
+        rules: leases.rules,
+        status: leases.status,
+      }).from(leases).where(and(
+        eq(leases.id, parsed.data.leaseId),
+        eq(leases.organizationId, ctx.organizationId),
+      )).for("update").limit(1);
+      if (!lease || lease.status !== "active" || !lease.endsAt) throw new Error("LEASE_NOT_RENEWABLE");
+      if (lease.endsAt < today) throw new Error("LEASE_EXPIRED");
+
+      const firstRenewalDate = new Date(`${lease.endsAt}T00:00:00Z`);
+      firstRenewalDate.setUTCDate(firstRenewalDate.getUTCDate() + 1);
+      const startsAt = firstRenewalDate.toISOString().slice(0, 10);
+      if (parsed.data.endsAt < startsAt) throw new Error("RENEWAL_DATE_NOT_EXTENDED");
+
+      const [room] = await tx.select({ id: rooms.id, status: rooms.status }).from(rooms)
+        .where(and(eq(rooms.id, lease.roomId), eq(rooms.organizationId, ctx.organizationId))).for("update").limit(1);
+      if (!room || ["maintenance", "inactive"].includes(room.status)) throw new Error("ROOM_UNAVAILABLE");
+
+      const overlap = await tx.select({ id: leases.id }).from(leases).where(and(
+        eq(leases.roomId, lease.roomId),
+        eq(leases.organizationId, ctx.organizationId),
+        ne(leases.id, lease.id),
+        eq(leases.status, "active"),
+        lte(leases.startsAt, parsed.data.endsAt),
+        or(isNull(leases.endsAt), gte(leases.endsAt, startsAt)),
+      )).limit(1);
+      if (overlap.length) throw new Error("LEASE_OVERLAP");
+
+      renewedLeaseId = id();
+      await tx.insert(leases).values({
+        id: renewedLeaseId,
+        organizationId: ctx.organizationId,
+        tenantId: lease.tenantId,
+        roomId: lease.roomId,
+        startsAt,
+        endsAt: parsed.data.endsAt,
+        monthlyRent: parsed.data.monthlyRent,
+        deposit: parsed.data.deposit,
+        dueDay: parsed.data.dueDay,
+        rules: lease.rules,
+        status: "active",
+      });
+
+      const oldLeaseCoversToday = lease.startsAt <= today && lease.endsAt >= today;
+      const renewedLeaseCoversToday = startsAt <= today && parsed.data.endsAt >= today;
+      const nextRoomStatus = oldLeaseCoversToday || renewedLeaseCoversToday ? "occupied" : "reserved";
+      if (nextRoomStatus !== room.status) {
+        await tx.update(rooms).set({ status: nextRoomStatus, updatedAt: new Date() }).where(eq(rooms.id, room.id));
+        await audit(tx, ctx.organizationId, ctx.userId, "room.status_changed", "room", room.id, { status: nextRoomStatus });
+      }
+
+      await audit(tx, ctx.organizationId, ctx.userId, "lease.renewed", "lease", renewedLeaseId, {
+        previousLeaseId: lease.id,
+        startsAt,
+        endsAt: parsed.data.endsAt,
+        monthlyRent: parsed.data.monthlyRent,
+        deposit: parsed.data.deposit,
+        dueDay: parsed.data.dueDay,
+      });
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "LEASE_NOT_RENEWABLE") go("/leases", "error", "Kontrak aktif dengan tanggal akhir diperlukan untuk perpanjangan.");
+    if (error instanceof Error && error.message === "LEASE_EXPIRED") go("/leases", "error", "Kontrak ini sudah melewati tanggal akhir. Proses penghuni keluar atau buat kontrak baru.");
+    if (error instanceof Error && error.message === "RENEWAL_DATE_NOT_EXTENDED") go("/leases", "error", "Tanggal akhir baru harus berada setelah tanggal akhir kontrak saat ini.");
+    if (error instanceof Error && error.message === "ROOM_UNAVAILABLE") go("/leases", "error", "Kamar sedang tidak dapat digunakan.");
+    if (error instanceof Error && error.message === "LEASE_OVERLAP") go("/leases", "error", "Perpanjangan bertabrakan dengan kontrak aktif lain di kamar ini.");
+    go("/leases", "error", "Perpanjangan kontrak gagal disimpan.");
+  }
+
+  revalidatePath("/leases");
+  revalidatePath("/rooms");
+  revalidatePath("/billing");
+  revalidatePath("/dashboard");
+  revalidatePath("/tenant");
+  go("/leases", "notice", "Perpanjangan kontrak berhasil dibuat; kontrak lama dan baru tersimpan terpisah.");
+}
+
 export async function endLease(form: FormData) {
   const ctx = await requireWorkspace(["owner", "manager"]);
-  const leaseId = requiredText(80).safeParse(value(form, "leaseId"));
-  if (!leaseId.success) go("/leases", "error", "Kontrak tidak valid.");
+  const parsed = z.object({
+    leaseId: requiredText(80),
+    checkoutDate: z.union([z.literal(""), z.iso.date()]),
+    depositRefunded: z.union([z.literal(""), money]),
+    finalElectricity: z.union([z.literal(""), z.string().regex(/^\d{1,14}(?:\.\d{1,3})?$/)]),
+    finalWater: z.union([z.literal(""), z.string().regex(/^\d{1,14}(?:\.\d{1,3})?$/)]),
+    checkoutNote: z.string().trim().max(500),
+  }).safeParse({
+    leaseId: value(form, "leaseId"),
+    checkoutDate: value(form, "checkoutDate"),
+    depositRefunded: value(form, "depositRefunded"),
+    finalElectricity: value(form, "finalElectricity"),
+    finalWater: value(form, "finalWater"),
+    checkoutNote: value(form, "checkoutNote"),
+  });
+  if (!parsed.success) go("/leases", "error", "Data proses keluar tidak valid.");
+
   const today = todayISO();
   try {
     await db.transaction(async (tx) => {
-      const [lease] = await tx.select({ id: leases.id, roomId: leases.roomId, startsAt: leases.startsAt, endsAt: leases.endsAt, status: leases.status })
-        .from(leases).where(and(eq(leases.id, leaseId.data), eq(leases.organizationId, ctx.organizationId))).for("update").limit(1);
+      const [lease] = await tx.select({
+        id: leases.id,
+        roomId: leases.roomId,
+        startsAt: leases.startsAt,
+        endsAt: leases.endsAt,
+        deposit: leases.deposit,
+        status: leases.status,
+      }).from(leases).where(and(
+        eq(leases.id, parsed.data.leaseId),
+        eq(leases.organizationId, ctx.organizationId),
+      )).for("update").limit(1);
       if (!lease || lease.status !== "active") throw new Error("LEASE_NOT_ACTIVE");
       const [room] = await tx.select({ id: rooms.id, status: rooms.status }).from(rooms)
         .where(and(eq(rooms.id, lease.roomId), eq(rooms.organizationId, ctx.organizationId))).for("update").limit(1);
       if (!room) throw new Error("ROOM_MISSING");
 
       const cancelledBeforeStart = lease.startsAt > today;
-      const finalStatus = cancelledBeforeStart ? "cancelled" : "ended";
-      const finalEndDate = cancelledBeforeStart ? lease.endsAt : lease.endsAt && lease.endsAt < today ? lease.endsAt : today;
+      const refund = BigInt(parsed.data.depositRefunded || "0");
+      const deposit = BigInt(lease.deposit);
+      let finalEndDate = lease.endsAt;
+      let finalStatus: "cancelled" | "ended" = "cancelled";
+      let checkoutChanges: Record<string, unknown> = { startsAt: lease.startsAt, cancelledBeforeStart: true };
+
+      if (!cancelledBeforeStart) {
+        const checkoutDate = parsed.data.checkoutDate || today;
+        if (checkoutDate < lease.startsAt || checkoutDate > today) throw new Error("CHECKOUT_DATE_INVALID");
+        if (refund > deposit) throw new Error("DEPOSIT_REFUND_TOO_HIGH");
+        const withheld = deposit - refund;
+        if (withheld > BigInt(0) && !parsed.data.checkoutNote) throw new Error("DEPOSIT_NOTE_REQUIRED");
+
+        const overlap = await tx.select({ id: leases.id }).from(leases).where(and(
+          eq(leases.roomId, room.id),
+          eq(leases.organizationId, ctx.organizationId),
+          ne(leases.id, lease.id),
+          eq(leases.status, "active"),
+          lte(leases.startsAt, checkoutDate),
+          or(isNull(leases.endsAt), gte(leases.endsAt, lease.startsAt)),
+        )).limit(1);
+        if (overlap.length) throw new Error("CHECKOUT_OVERLAPS_LEASE");
+
+        finalEndDate = checkoutDate;
+        finalStatus = "ended";
+        checkoutChanges = {
+          endsAt: checkoutDate,
+          depositHeld: lease.deposit,
+          depositRefunded: refund.toString(),
+          depositWithheld: withheld.toString(),
+          finalElectricityReading: parsed.data.finalElectricity || null,
+          finalWaterReading: parsed.data.finalWater || null,
+          note: parsed.data.checkoutNote || null,
+        };
+      } else if (refund > BigInt(0) || parsed.data.finalElectricity || parsed.data.finalWater || parsed.data.checkoutNote) {
+        throw new Error("CANNOT_CHECKOUT_UNSTARTED_LEASE");
+      }
+
       await tx.update(leases).set({ status: finalStatus, endsAt: finalEndDate, updatedAt: new Date() }).where(eq(leases.id, lease.id));
 
       const remainingLeases = await tx.select({ startsAt: leases.startsAt, endsAt: leases.endsAt }).from(leases).where(and(
@@ -414,18 +582,38 @@ export async function endLease(form: FormData) {
         await tx.update(rooms).set({ status: nextRoomStatus, updatedAt: new Date() }).where(eq(rooms.id, room.id));
         await audit(tx, ctx.organizationId, ctx.userId, "room.status_changed", "room", room.id, { status: nextRoomStatus });
       }
-      await audit(tx, ctx.organizationId, ctx.userId, cancelledBeforeStart ? "lease.cancelled" : "lease.ended", "lease", lease.id, { endsAt: finalEndDate });
+      if (cancelledBeforeStart) {
+        const [renewal] = await tx.select({ changes: auditLogs.changes }).from(auditLogs).where(and(
+          eq(auditLogs.organizationId, ctx.organizationId),
+          eq(auditLogs.action, "lease.renewed"),
+          eq(auditLogs.entityId, lease.id),
+        )).limit(1);
+        const previousLeaseId = renewal?.changes?.previousLeaseId;
+        if (typeof previousLeaseId === "string") {
+          await audit(tx, ctx.organizationId, ctx.userId, "lease.renewal_cancelled", "lease", lease.id, {
+            renewalLeaseId: lease.id,
+            previousLeaseId,
+          });
+        }
+      }
+      await audit(tx, ctx.organizationId, ctx.userId, cancelledBeforeStart ? "lease.cancelled" : "lease.ended", "lease", lease.id, checkoutChanges);
     });
   } catch (error) {
     if (error instanceof Error && error.message === "LEASE_NOT_ACTIVE") go("/leases", "error", "Kontrak ini tidak lagi aktif.");
     if (error instanceof Error && error.message === "ROOM_MISSING") go("/leases", "error", "Kamar kontrak tidak ditemukan.");
-    go("/leases", "error", "Kontrak gagal diakhiri.");
+    if (error instanceof Error && error.message === "CHECKOUT_DATE_INVALID") go("/leases", "error", "Tanggal keluar harus berada di antara tanggal mulai dan hari ini.");
+    if (error instanceof Error && error.message === "DEPOSIT_REFUND_TOO_HIGH") go("/leases", "error", "Deposit yang dikembalikan tidak boleh melebihi deposit kontrak.");
+    if (error instanceof Error && error.message === "DEPOSIT_NOTE_REQUIRED") go("/leases", "error", "Isi catatan jika ada deposit yang tidak dikembalikan.");
+    if (error instanceof Error && error.message === "CHECKOUT_OVERLAPS_LEASE") go("/leases", "error", "Tanggal keluar bertabrakan dengan kontrak aktif lain di kamar ini.");
+    if (error instanceof Error && error.message === "CANNOT_CHECKOUT_UNSTARTED_LEASE") go("/leases", "error", "Kontrak yang belum dimulai hanya dapat dibatalkan.");
+    go("/leases", "error", "Proses penghuni keluar gagal. Coba lagi.");
   }
   revalidatePath("/leases");
   revalidatePath("/rooms");
   revalidatePath("/billing");
   revalidatePath("/dashboard");
-  go("/leases", "notice", "Kontrak diakhiri; status kamar diperbarui.");
+  revalidatePath("/tenant");
+  go("/leases", "notice", "Proses penghuni keluar tersimpan; status kamar sudah diperbarui.");
 }
 
 export async function generateMonthlyInvoices(form: FormData) {

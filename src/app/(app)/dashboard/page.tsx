@@ -9,10 +9,14 @@ import { requireWorkspace } from "@/server/context";
 export default async function DashboardPage() {
   const ctx = await requireWorkspace(["owner", "manager", "finance", "staff"]);
   const canSeeFinance = ctx.role !== "staff";
+  const canManageLeases = ctx.role === "owner" || ctx.role === "manager";
   const today = todayISO();
   const reminderEnd = new Date(`${today}T00:00:00Z`);
   reminderEnd.setUTCDate(reminderEnd.getUTCDate() + 7);
   const reminderEndDate = reminderEnd.toISOString().slice(0, 10);
+  const contractHorizon = new Date(`${today}T00:00:00Z`);
+  contractHorizon.setUTCDate(contractHorizon.getUTCDate() + 30);
+  const contractHorizonDate = contractHorizon.toISOString().slice(0, 10);
   const [year, month] = today.slice(0, 7).split("-").map(Number);
   const nextMonth = month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, "0")}-01`;
   const monthStart = new Date(`${today.slice(0, 7)}-01T00:00:00+08:00`);
@@ -22,7 +26,7 @@ export default async function DashboardPage() {
     sql`${maintenanceTickets.status} not in ('completed','rejected')`,
     ...(ctx.role === "staff" ? [eq(maintenanceTickets.assignedMemberId, ctx.memberId)] : []),
   );
-  const [propertyCount, roomCounts, incomeRows, expenseRows, overdueRows, dueSoonRows, upcomingInvoices, openTickets, openTicketCount] = await Promise.all([
+  const [propertyCount, roomCounts, incomeRows, expenseRows, overdueRows, dueSoonRows, upcomingInvoices, expiringLeaseRows, openTickets, openTicketCount] = await Promise.all([
     db.select({ count: sql<string>`count(*)` }).from(properties).where(eq(properties.organizationId, ctx.organizationId)),
     db.select({ status: rooms.status, count: sql<string>`count(*)` }).from(rooms).where(eq(rooms.organizationId, ctx.organizationId)).groupBy(rooms.status),
     canSeeFinance ? db.select({ total: sql<string>`coalesce(sum(${payments.amount}), 0)` }).from(payments).where(and(eq(payments.organizationId, ctx.organizationId), eq(payments.status, "verified"), gte(payments.paidAt, monthStart), lt(payments.paidAt, monthEnd))) : Promise.resolve([{ total: "0" }]),
@@ -51,6 +55,39 @@ export default async function DashboardPage() {
         lte(invoices.dueAt, reminderEndDate),
       ))
       .orderBy(invoices.dueAt)
+      .limit(5) : Promise.resolve([]),
+    canManageLeases ? db.select({
+      id: leases.id,
+      endsAt: leases.endsAt,
+      tenantName: tenants.fullName,
+      roomCode: rooms.code,
+      propertyName: properties.name,
+    }).from(leases)
+      .innerJoin(tenants, eq(leases.tenantId, tenants.id))
+      .innerJoin(rooms, eq(leases.roomId, rooms.id))
+      .innerJoin(properties, eq(rooms.propertyId, properties.id))
+      .where(and(
+        eq(leases.organizationId, ctx.organizationId),
+        eq(tenants.organizationId, ctx.organizationId),
+        eq(rooms.organizationId, ctx.organizationId),
+        eq(properties.organizationId, ctx.organizationId),
+        eq(leases.status, "active"),
+        gte(leases.endsAt, today),
+        lte(leases.endsAt, contractHorizonDate),
+        sql`not exists (
+          select 1 from audit_log renewal_log
+          where renewal_log.organization_id = ${ctx.organizationId}
+            and renewal_log.action = 'lease.renewed'
+            and renewal_log.changes->>'previousLeaseId' = ${leases.id}
+            and not exists (
+              select 1 from audit_log cancellation_log
+              where cancellation_log.organization_id = ${ctx.organizationId}
+                and cancellation_log.action = 'lease.renewal_cancelled'
+                and cancellation_log.changes->>'renewalLeaseId' = renewal_log.entity_id
+            )
+        )`,
+      ))
+      .orderBy(leases.endsAt)
       .limit(5) : Promise.resolve([]),
     db.select({ id: maintenanceTickets.id, category: maintenanceTickets.category, priority: maintenanceTickets.priority, status: maintenanceTickets.status, createdAt: maintenanceTickets.createdAt })
       .from(maintenanceTickets).where(ticketFilter).orderBy(desc(maintenanceTickets.createdAt)).limit(5),
@@ -99,6 +136,18 @@ export default async function DashboardPage() {
           return <div key={invoice.id} className="list-card">
             <div className="min-w-0"><p className="m-0 truncate text-xs font-semibold">{invoice.tenantName} · Kamar {invoice.roomCode}</p><p className="muted mb-0 mt-1 text-[10px]">{daysRemaining === 0 ? "Jatuh tempo hari ini" : `Jatuh tempo ${formatDate(invoice.dueAt)}`}</p></div>
             <div className="flex shrink-0 flex-col items-end gap-1"><span className="text-[10px] font-semibold text-[#755b28]">{daysRemaining === 0 ? "Hari ini" : `${daysRemaining} hari lagi`}</span><strong className="text-xs">{formatIDR(String(BigInt(invoice.amount) - BigInt(invoice.paidAmount)))}</strong></div>
+          </div>;
+        })}
+      </div>}
+    </section>}
+    {canManageLeases && <section className="surface p-4 sm:p-5">
+      <div className="mb-3 flex items-start justify-between gap-3"><div><h2 className="surface-title m-0">Kontrak segera berakhir</h2><p className="muted mb-0 mt-1 text-xs">Kontrak aktif yang berakhir dalam 30 hari</p></div><a className="text-xs font-semibold text-[#39795a]" href="/leases">Kelola kontrak</a></div>
+      {expiringLeaseRows.length === 0 ? <EmptyState title="Belum ada kontrak yang mendekati akhir" description="Kontrak aktif dengan tanggal akhir dalam 30 hari akan muncul di sini." /> : <div className="grid gap-2">
+        {expiringLeaseRows.map((lease) => {
+          const daysRemaining = lease.endsAt ? Math.round((Date.parse(`${lease.endsAt}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000) : 0;
+          return <div key={lease.id} className="list-card">
+            <div className="min-w-0"><p className="m-0 truncate text-xs font-semibold">{lease.tenantName} · {lease.propertyName} · Kamar {lease.roomCode}</p><p className="muted mb-0 mt-1 text-[10px]">{lease.endsAt ? `Berakhir ${formatDate(lease.endsAt)}` : "Tanggal akhir tidak tersedia"}</p></div>
+            <span className="shrink-0 text-[10px] font-semibold text-[#755b28]">{daysRemaining === 0 ? "Hari ini" : `${daysRemaining} hari lagi`}</span>
           </div>;
         })}
       </div>}
