@@ -60,7 +60,7 @@ npm run db:migrate
 npm run dev
 ```
 
-Deployment Production Vercel menerapkan migration Drizzle yang belum dijalankan sebelum build aplikasi. Skrip ini hanya aktif saat `VERCEL_ENV=production`; Preview tidak mengubah database Production. Untuk migration lokal, jalankan `npm run db:migrate` secara manual.
+Deployment Production Vercel menerapkan migration Drizzle yang belum dijalankan sebelum build aplikasi. Skrip ini hanya aktif saat `VERCEL_ENV=production`; Preview tidak mengubah database Production. Untuk migration lokal, jalankan `npm run db:migrate` secara manual. Pada Vercel, `BETTER_AUTH_URL` dan `NEXT_PUBLIC_APP_URL` Production harus memakai domain utama aplikasi; client auth memakai origin yang sedang dibuka.
 
 Buka `http://localhost:3000`, pilih **Daftar**, lalu buat workspace. Untuk memakai Neon secara lokal, isi `DATABASE_URL` dari dashboard Neon. Jika tersedia, isi juga `DATABASE_URL_UNPOOLED` untuk menjalankan migration melalui koneksi langsung.
 

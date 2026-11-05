@@ -777,7 +777,8 @@ export async function createTenantPortalInvite(
 
   revalidatePath("/team");
   revalidatePath("/tenants");
-  const configuredBaseUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.BETTER_AUTH_URL ?? "http://localhost:3000";
+  const deploymentBaseUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined;
+  const configuredBaseUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.BETTER_AUTH_URL ?? deploymentBaseUrl ?? "http://localhost:3000";
   const baseUrl = configuredBaseUrl.endsWith("/") ? configuredBaseUrl.slice(0, -1) : configuredBaseUrl;
   return { inviteLink: baseUrl + "/invite?token=" + encodeURIComponent(token) };
 }
